@@ -123,6 +123,28 @@ def test_update_book_changes_fields(library):
     assert fetched.shelf == "4"
 
 
+def test_update_book_preserves_existing_cover_when_edit_carries_none(library):
+    """The WebUI edit form never carries cover bytes (no photo-upload UI for edits, see
+    main.py's module docstring) -- editing an unrelated field like shelf location must not wipe
+    a cover fetched earlier by add_by_isbn/manual entry."""
+    book_id = library.add_book(make_book(cover_image=b"fake-jpeg-bytes", cover_mime="image/jpeg"))
+    edited = make_book(shelf="4", cover_image=None, cover_mime="")
+    library.update_book(book_id, edited)
+    fetched = library.get_book(book_id)
+    assert fetched.shelf == "4"
+    assert fetched.cover_image == b"fake-jpeg-bytes"
+    assert fetched.cover_mime == "image/jpeg"
+
+
+def test_update_book_overwrites_cover_when_edit_carries_one(library):
+    book_id = library.add_book(make_book(cover_image=b"old-cover", cover_mime="image/jpeg"))
+    edited = make_book(cover_image=b"new-cover", cover_mime="image/png")
+    library.update_book(book_id, edited)
+    fetched = library.get_book(book_id)
+    assert fetched.cover_image == b"new-cover"
+    assert fetched.cover_mime == "image/png"
+
+
 def test_delete_book_removes_it_and_plays_delete_tone(library):
     book_id = library.add_book(make_book())
     library.delete_book(book_id)

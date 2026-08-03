@@ -10,6 +10,11 @@ optional Modulino Buzzer.
 Built on the official `arduino:web_ui`, `arduino:dbstorage_sqlstore`, and `arduino:llm`
 Bricks, plus a custom `ocr_runtime` Brick (Tesseract OCR).
 
+![TechaQ library view](docs/screenshot.png)
+
+*The Library view: cover art, authors, and shelf location fetched automatically from a barcode
+scan, alongside a manually-added book still awaiting a location.*
+
 ## Running it
 
 Deploy with the Arduino App CLI like any other app Brick bundle (`app.yaml` declares the

@@ -179,6 +179,14 @@ class Library:
             return None
 
     def update_book(self, book_id: int, book: BookRecord) -> None:
+        """Edits never carry cover bytes (there's no photo-upload UI for an edit, see main.py's
+        module docstring), so preserve whatever cover the record already had rather than wiping
+        it every time a user edits an unrelated field like shelf location."""
+        if not book.cover_image:
+            existing = self.db.get(book_id)
+            if existing is not None:
+                book.cover_image = existing.cover_image
+                book.cover_mime = existing.cover_mime
         self.db.update(book_id, book)
 
     def delete_book(self, book_id: int) -> None:
