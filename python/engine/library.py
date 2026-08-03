@@ -29,6 +29,8 @@ whole app down. This module's own methods therefore never raise for "the depende
 from __future__ import annotations
 
 import base64
+import csv
+import io
 from dataclasses import asdict
 
 from .db import BookDB
@@ -273,6 +275,72 @@ class Library:
                     print(f"[techaq] failed to decode cover_data_uri while confirming candidate: {exc!r}")
             ids.append(self.add_book(book))
         return ids
+
+    # -- photo-to-ISBN OCR -------------------------------------------------------------------
+
+    def scan_isbn_photo(self, image_bytes: bytes) -> list[str]:
+        """Run OCR over a photo (of a barcode's printed digits, a book cover, etc.) and return
+        plausible ISBN-13/ISBN-10 digit-sequence candidates for the user to pick from/edit before
+        looking one up -- nothing is looked up or saved here. Degrades to [] if ocr_runtime is
+        unavailable/unreachable or the image is malformed, same as process_shelf_image().
+        """
+        if ocr is None:
+            return []
+        try:
+            return ocr.process_isbn_photo(image_bytes) or []
+        except Exception as exc:
+            print(f"[techaq] ocr.process_isbn_photo failed: {exc!r}")
+            return []
+
+    # -- CSV import/export --------------------------------------------------------------------
+
+    def import_csv(self, csv_text: str) -> dict:
+        """Parse a CSV export (or any CSV with matching column headers) and add each row as a new
+        book (via db.insert() directly, not add_book(), so a multi-row import plays one summary
+        buzz rather than one per row). A row whose isbn13/isbn10 already matches a book in the
+        library is skipped (counted in "skipped") rather than added, to avoid piling up duplicates
+        on a re-import; rows with no ISBN at all always get added, since there's nothing to dedupe
+        against. A row that fails to parse into a BookRecord is counted in "errors" and otherwise
+        ignored -- never raises.
+        """
+        known_fields = set(BookRecord.__dataclass_fields__) - {"id", "created_at", "updated_at", "cover_image"}
+        added = 0
+        skipped = 0
+        errors: list[str] = []
+
+        try:
+            reader = csv.DictReader(io.StringIO(csv_text))
+            rows = list(reader)
+        except Exception as exc:
+            return {"added": 0, "skipped": 0, "errors": [f"failed to parse CSV: {exc!r}"]}
+
+        for i, row in enumerate(rows):
+            try:
+                values = {}
+                for field in known_fields:
+                    raw = (row.get(field) or "").strip()
+                    if field in ("authors", "categories"):
+                        values[field] = [v.strip() for v in raw.split(";") if v.strip()] if raw else []
+                    elif field == "page_count":
+                        values[field] = int(raw) if raw else None
+                    else:
+                        values[field] = raw
+                book = BookRecord(**values)
+            except Exception as exc:
+                errors.append(f"row {i + 2}: {exc!r}")
+                continue
+
+            isbn = book.isbn13 or book.isbn10
+            if isbn and self.db.get_by_isbn(isbn) is not None:
+                skipped += 1
+                continue
+
+            self.db.insert(book)
+            added += 1
+
+        if added:
+            self._buzz("play_save")
+        return {"added": added, "skipped": skipped, "errors": errors}
 
 
 def create_library(db_name: str | None = None) -> Library:

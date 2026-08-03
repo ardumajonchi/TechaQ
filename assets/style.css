@@ -421,8 +421,144 @@ button:disabled {
   min-height: unset;
 }
 
-#shelf-save-btn.hidden {
+.hidden {
   display: none;
+}
+
+/* -- photo-to-ISBN input (Scan/Add view) ------------------------------------------------------ */
+
+.hidden-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+}
+
+.scan-photo-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.8rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  cursor: pointer;
+  margin-bottom: 0.3rem;
+}
+
+.scan-photo-label:hover {
+  border-color: var(--accent);
+}
+
+#isbn-photo-candidates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+}
+
+.isbn-candidate-btn {
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.7rem;
+  min-height: unset;
+}
+
+/* -- library toolbar: view toggle + export (Library view) ------------------------------------- */
+
+.library-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.view-toggle {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.view-toggle-btn {
+  background: var(--panel-alt);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  min-height: unset;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.view-toggle-btn.active {
+  color: var(--accent-text);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* -- book table (Library list view) ------------------------------------------------------------ */
+
+.table-wrap {
+  overflow-x: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.book-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.book-table th, .book-table td {
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.book-table th {
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.book-table tbody tr {
+  cursor: pointer;
+}
+
+.book-table tbody tr:hover {
+  background: var(--panel-alt);
+}
+
+.book-table td.empty {
+  color: var(--text-dim);
+  font-style: italic;
+  cursor: default;
+  white-space: normal;
+}
+
+.book-table .table-cover {
+  width: 32px;
+}
+
+.book-table .table-cover img {
+  width: 28px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 3px;
+  display: block;
+}
+
+@media (max-width: 600px) {
+  .book-table .table-isbn, .book-table .table-source {
+    display: none;
+  }
 }
 
 /* -- modal (book detail/edit) ----------------------------------------------------------------- */

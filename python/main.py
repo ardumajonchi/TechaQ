@@ -16,10 +16,11 @@ REST API (all bodies/responses are JSON except the cover-image route, see below)
                                             (any subset of the four location params may be given)
   GET    /api/books/{book_id}          -- one book, 404-shaped {"error": "not found"} if missing.
   POST   /api/books                    -- manual add. Body: BookIn (see below), same field names
-                                            as BookRecord minus id/created_at/updated_at/cover_image
-                                            (cover bytes aren't accepted over this JSON route --
-                                            there's no photo-upload UI for a manual add's cover in
-                                            this iteration). Returns the saved book.
+                                            as BookRecord minus id/created_at/updated_at/cover_image,
+                                            plus an optional `cover_data_uri` (base64 data: URI --
+                                            the shape lookup_isbn()/book_to_dict() hand back for an
+                                            unsaved preview) which gets decoded into real cover
+                                            bytes on save. Returns the saved book.
   PUT    /api/books/{book_id}          -- edit. Body: BookIn. Returns the updated book.
   DELETE /api/books/{book_id}          -- delete. Returns {"ok": true}.
   POST   /api/scan                     -- scanner_reader.py's integration point. Body:
@@ -53,6 +54,16 @@ REST API (all bodies/responses are JSON except the cover-image route, see below)
                                             (each dict shaped like a book_to_dict() result, edited
                                             client-side) the user picked "yes, save this" on.
                                             Returns {"ids": [...]}.
+  POST   /api/scan_photo               -- body {"image_b64": "..."} (same shape as
+                                            /api/shelf_photo). Runs OCR + digit-pattern matching
+                                            (no LLM/metadata call) looking for ISBN-13/ISBN-10
+                                            digit sequences -- for "fill the ISBN lookup field from
+                                            a photo" instead of typing. Nothing is looked up or
+                                            saved. Returns {"candidates": ["9780...", ...]}.
+  POST   /api/import_csv               -- body {"csv": "<raw CSV text>"}. Parses rows matching the
+                                            export column headers and adds each as a new book,
+                                            skipping rows whose ISBN already exists in the library.
+                                            Returns {"added": int, "skipped": int, "errors": [...]}.
   GET    /api/locations                -- {"room": [...], "floor": [...], "column": [...],
                                             "shelf": [...]} distinct values, for autocomplete.
   GET    /api/books/{book_id}/cover    -- raw image bytes with the book's real cover_mime as
@@ -127,9 +138,21 @@ class BookIn(BaseModel):
     column: str = ""
     shelf: str = ""
     notes: str = ""
+    # Only ever populated by the frontend re-POSTing a lookup_isbn()/book_to_dict() response
+    # that carried a cover as a data: URI (no id yet to hang a /cover URL off) -- see
+    # lookup_isbn()'s "save this book" flow in app.js. Never a real DB field; decoded below.
+    cover_data_uri: str | None = None
 
     def to_book(self) -> BookRecord:
-        return BookRecord(**self.dict())
+        data = self.dict()
+        cover_data_uri = data.pop("cover_data_uri", None)
+        book = BookRecord(**data)
+        if cover_data_uri and isinstance(cover_data_uri, str) and "," in cover_data_uri:
+            try:
+                book.cover_image = base64.b64decode(cover_data_uri.split(",", 1)[1])
+            except Exception as exc:
+                print(f"[techaq] failed to decode cover_data_uri on BookIn.to_book(): {exc!r}")
+        return book
 
 
 class ScanIn(BaseModel):
@@ -147,6 +170,14 @@ class ShelfPhotoIn(BaseModel):
 
 class ShelfConfirmIn(BaseModel):
     books: list[dict]
+
+
+class ScanPhotoIn(BaseModel):
+    image_b64: str
+
+
+class ImportCsvIn(BaseModel):
+    csv: str
 
 
 def main():
@@ -232,6 +263,19 @@ def main():
         ids = library.confirm_shelf_candidates(body.books)
         return {"ids": ids}
 
+    def scan_photo(body: ScanPhotoIn):
+        try:
+            image_bytes = base64.b64decode(body.image_b64)
+        except Exception as exc:
+            return {"error": f"invalid base64 image: {exc!r}", "candidates": []}
+        candidates = library.scan_isbn_photo(image_bytes)
+        return {"candidates": candidates}
+
+    # -- CSV import -----------------------------------------------------------------------------
+
+    def import_csv(body: ImportCsvIn):
+        return library.import_csv(body.csv)
+
     ui.expose_api("GET", "/api/books", list_books)
     ui.expose_api("GET", "/api/books/{book_id}", get_book)
     ui.expose_api("POST", "/api/books", create_book)
@@ -246,6 +290,9 @@ def main():
 
     ui.expose_api("POST", "/api/shelf_photo", shelf_photo)
     ui.expose_api("POST", "/api/shelf_photo/confirm", shelf_photo_confirm)
+    ui.expose_api("POST", "/api/scan_photo", scan_photo)
+
+    ui.expose_api("POST", "/api/import_csv", import_csv)
 
     # Raw-bytes route, mounted directly on the Brick's own FastAPI instance -- see module
     # docstring's "GET /api/books/{book_id}/cover" entry for why this bypasses expose_api().

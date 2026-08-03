@@ -256,3 +256,64 @@ def test_process_shelf_photo_unreachable_service_returns_empty_list(monkeypatch)
 def test_process_shelf_photo_invalid_image_returns_empty_list():
     result = ocr.process_shelf_photo(b"garbage, not an image", llm=None)
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# extract_isbn_candidates / process_isbn_photo
+# ---------------------------------------------------------------------------
+
+
+def test_extract_isbn_candidates_finds_13_digit_sequence():
+    result = ocr.extract_isbn_candidates("some noise 9780134685991 more noise")
+    assert result == ["9780134685991"]
+
+
+def test_extract_isbn_candidates_finds_10_digit_sequence():
+    result = ocr.extract_isbn_candidates("blah 0134685997 blah")
+    assert result == ["0134685997"]
+
+
+def test_extract_isbn_candidates_normalizes_hyphens_and_spaces():
+    result = ocr.extract_isbn_candidates("ISBN 978-0-13-468599-1")
+    assert result == ["9780134685991"]
+
+
+def test_extract_isbn_candidates_no_digits_returns_empty_list():
+    assert ocr.extract_isbn_candidates("no digits here at all") == []
+
+
+def test_extract_isbn_candidates_empty_string_returns_empty_list():
+    assert ocr.extract_isbn_candidates("") == []
+
+
+def test_extract_isbn_candidates_dedupes_and_prefers_978_979_prefix():
+    text = "0134685997\n9780134685991\n9780134685991\n9791234567896"
+    result = ocr.extract_isbn_candidates(text)
+    assert result[0] in ("9780134685991", "9791234567896")
+    assert set(result) == {"0134685997", "9780134685991", "9791234567896"}
+    assert result.count("9780134685991") == 1
+
+
+def test_process_isbn_photo_picks_longest_variant_and_extracts(monkeypatch):
+    call_count = {"n": 0}
+
+    def fake_call_ocr_service(image_bytes, host=ocr.DEFAULT_OCR_HOST, port=ocr.DEFAULT_OCR_PORT):
+        call_count["n"] += 1
+        return "5" if call_count["n"] != 2 else "9780134685991"
+
+    monkeypatch.setattr(ocr, "call_ocr_service", fake_call_ocr_service)
+
+    result = ocr.process_isbn_photo(_sample_image_bytes())
+    assert call_count["n"] == 3
+    assert result == ["9780134685991"]
+
+
+def test_process_isbn_photo_unreachable_service_returns_empty_list(monkeypatch):
+    monkeypatch.setattr(ocr, "call_ocr_service", lambda *a, **k: "")
+    result = ocr.process_isbn_photo(_sample_image_bytes())
+    assert result == []
+
+
+def test_process_isbn_photo_invalid_image_returns_empty_list():
+    result = ocr.process_isbn_photo(b"garbage, not an image")
+    assert result == []

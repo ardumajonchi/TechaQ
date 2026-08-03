@@ -9,6 +9,8 @@
 let socket;
 let currentLocations = { room: [], floor: [], column: [], shelf: [] };
 let shelfCandidates = []; // enriched candidates currently shown in the Shelf Photo view
+let libraryViewMode = "grid"; // "grid" | "table" -- toggled in the Library view's search card
+let currentLibraryBooks = []; // last-loaded Library results, for CSV export
 
 // -- small helpers --------------------------------------------------------------------------
 
@@ -181,6 +183,59 @@ function setupIsbnLookup() {
   });
 }
 
+function renderIsbnPhotoCandidates(candidates) {
+  const container = qs("#isbn-photo-candidates");
+  if (candidates.length <= 1) {
+    container.innerHTML = "";
+    return;
+  }
+  // multiple plausible ISBNs found -- let the user pick which one to fill in, rather than
+  // guessing (the single-candidate case auto-fills the input directly, see handleIsbnPhoto).
+  container.innerHTML = candidates
+    .map((code) => `<button type="button" class="isbn-candidate-btn secondary">${escapeHtml(code)}</button>`)
+    .join("");
+  qsa(".isbn-candidate-btn", container).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      qs("#isbn-lookup-input").value = btn.textContent;
+      container.innerHTML = "";
+    });
+  });
+}
+
+async function handleIsbnPhoto(file) {
+  const status = qs("#isbn-photo-status");
+  status.className = "status";
+  status.textContent = "Scanning photo for an ISBN...";
+  qs("#isbn-photo-candidates").innerHTML = "";
+  try {
+    const image_b64 = await fileToBase64(file);
+    const data = await apiSend("POST", "/api/scan_photo", { image_b64 });
+    const candidates = data.candidates || [];
+    if (!candidates.length) {
+      status.className = "status error";
+      status.textContent = "No ISBN-looking digits found in that photo.";
+    } else if (candidates.length === 1) {
+      qs("#isbn-lookup-input").value = candidates[0];
+      status.className = "status success";
+      status.textContent = "Filled in from photo -- review, then Look up.";
+    } else {
+      status.textContent = `Found ${candidates.length} possible codes -- pick one:`;
+      renderIsbnPhotoCandidates(candidates);
+    }
+  } catch (exc) {
+    status.className = "status error";
+    status.textContent = "Failed to scan photo.";
+  }
+}
+
+function setupIsbnPhoto() {
+  qs("#isbn-photo-input").addEventListener("change", (evt) => {
+    const file = evt.target.files[0];
+    if (file) handleIsbnPhoto(file);
+    evt.target.value = "";
+  });
+}
+
 function bookFromFormData(form) {
   const fd = new FormData(form);
   const toList = (v) => (v || "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -251,7 +306,6 @@ function renderBookGrid(container, books, { onClick } = {}) {
 }
 
 async function loadLibrary() {
-  const container = qs("#library-grid");
   const q = qs("#library-search-input").value.trim();
   const room = qs("#filter-room").value;
   const floor = qs("#filter-floor").value;
@@ -270,10 +324,100 @@ async function loadLibrary() {
 
   try {
     const data = await apiGet(`/api/books?${params.toString()}`);
-    renderBookGrid(container, data.books || [], { onClick: openBookModal });
+    currentLibraryBooks = data.books || [];
+    renderLibraryResults();
   } catch (exc) {
-    container.innerHTML = `<p class="empty">Failed to load library.</p>`;
+    currentLibraryBooks = [];
+    qs("#library-grid").innerHTML = `<p class="empty">Failed to load library.</p>`;
+    qs("#library-table").innerHTML = "";
   }
+}
+
+function renderLibraryResults() {
+  const gridEl = qs("#library-grid");
+  const tableWrapEl = qs("#library-table-wrap");
+  if (libraryViewMode === "table") {
+    gridEl.classList.add("hidden");
+    tableWrapEl.classList.remove("hidden");
+    renderBookTable(qs("#library-table"), currentLibraryBooks, { onClick: openBookModal });
+  } else {
+    tableWrapEl.classList.add("hidden");
+    gridEl.classList.remove("hidden");
+    renderBookGrid(gridEl, currentLibraryBooks, { onClick: openBookModal });
+  }
+}
+
+function renderBookTable(tableEl, books, { onClick } = {}) {
+  if (!books.length) {
+    tableEl.innerHTML = `<tbody><tr><td class="empty">No books found.</td></tr></tbody>`;
+    return;
+  }
+  const rows = books
+    .map((book) => {
+      const cover = coverSrc(book);
+      return `
+        <tr data-id="${book.id}">
+          <td class="table-cover">${cover ? `<img src="${cover}" alt="">` : "📕"}</td>
+          <td>${escapeHtml(book.title || "(untitled)")}</td>
+          <td>${escapeHtml(formatAuthors(book.authors))}</td>
+          <td class="table-isbn">${escapeHtml(book.isbn13 || book.isbn10 || "")}</td>
+          <td>${escapeHtml(formatLocation(book))}</td>
+          <td class="table-source">${escapeHtml(book.source || "")}</td>
+        </tr>
+      `;
+    })
+    .join("");
+  tableEl.innerHTML = `
+    <thead>
+      <tr>
+        <th></th><th>Title</th><th>Authors</th><th class="table-isbn">ISBN</th><th>Location</th><th class="table-source">Source</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  `;
+  if (onClick) {
+    qsa("tbody tr", tableEl).forEach((tr) => {
+      const book = books.find((b) => String(b.id) === tr.dataset.id);
+      if (book) tr.addEventListener("click", () => onClick(book));
+    });
+  }
+}
+
+const CSV_EXPORT_FIELDS = [
+  "title", "subtitle", "authors", "isbn13", "isbn10", "publisher", "published_date",
+  "description", "page_count", "categories", "language", "source",
+  "room", "floor", "column", "shelf", "notes",
+];
+
+function csvEscape(value) {
+  const str = value == null ? "" : String(value);
+  if (/[",\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+  return str;
+}
+
+function booksToCsv(books) {
+  const lines = [CSV_EXPORT_FIELDS.join(",")];
+  for (const book of books) {
+    const row = CSV_EXPORT_FIELDS.map((field) => {
+      const value = book[field];
+      if (Array.isArray(value)) return csvEscape(value.join(";"));
+      return csvEscape(value);
+    });
+    lines.push(row.join(","));
+  }
+  return lines.join("\n");
+}
+
+function downloadCsv(filename, csvText) {
+  const blob = new Blob([csvText], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function setupLibraryView() {
@@ -290,6 +434,25 @@ function setupLibraryView() {
       qs(`#filter-${field}`).value = "";
     }
     loadLibrary();
+  });
+  qs("#library-view-grid-btn").addEventListener("click", () => {
+    libraryViewMode = "grid";
+    qs("#library-view-grid-btn").classList.add("active");
+    qs("#library-view-table-btn").classList.remove("active");
+    renderLibraryResults();
+  });
+  qs("#library-view-table-btn").addEventListener("click", () => {
+    libraryViewMode = "table";
+    qs("#library-view-table-btn").classList.add("active");
+    qs("#library-view-grid-btn").classList.remove("active");
+    renderLibraryResults();
+  });
+  qs("#library-export-btn").addEventListener("click", () => {
+    if (!currentLibraryBooks.length) {
+      toast("No results to export.", true);
+      return;
+    }
+    downloadCsv("techaq-search-results.csv", booksToCsv(currentLibraryBooks));
   });
 }
 
@@ -517,17 +680,57 @@ function setupShelfPhoto() {
   });
 }
 
+// -- Settings: full-library CSV import/export ---------------------------------------------------
+
+function setupSettingsCsv() {
+  qs("#settings-export-btn").addEventListener("click", async () => {
+    try {
+      const data = await apiGet("/api/books");
+      downloadCsv("techaq-library.csv", booksToCsv(data.books || []));
+    } catch (exc) {
+      toast("Failed to export library.", true);
+    }
+  });
+
+  qs("#settings-import-btn").addEventListener("click", async () => {
+    const input = qs("#settings-import-input");
+    const status = qs("#settings-import-status");
+    const file = input.files[0];
+    if (!file) {
+      status.className = "status error";
+      status.textContent = "Choose a CSV file first.";
+      return;
+    }
+    status.className = "status";
+    status.textContent = "Importing...";
+    try {
+      const csvText = await file.text();
+      const data = await apiSend("POST", "/api/import_csv", { csv: csvText });
+      const errCount = (data.errors || []).length;
+      status.className = errCount ? "status error" : "status success";
+      status.textContent = `Added ${data.added}, skipped ${data.skipped} (already in library)${errCount ? `, ${errCount} error(s)` : ""}.`;
+      input.value = "";
+      loadLocations();
+    } catch (exc) {
+      status.className = "status error";
+      status.textContent = "Import failed.";
+    }
+  });
+}
+
 // -- boot --------------------------------------------------------------------------------------
 
 function main() {
   setupTabs();
   setupScanSocket();
   setupIsbnLookup();
+  setupIsbnPhoto();
   setupManualAddForm();
   setupLibraryView();
   setupModal();
   setupAiSearch();
   setupShelfPhoto();
+  setupSettingsCsv();
   loadLocations();
 }
 

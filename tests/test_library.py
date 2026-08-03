@@ -375,6 +375,97 @@ def test_confirm_shelf_candidates_ignores_unknown_fields(library):
 
 
 # ---------------------------------------------------------------------------
+# scan_isbn_photo (ocr contract)
+# ---------------------------------------------------------------------------
+
+
+def test_scan_isbn_photo_returns_candidates_from_ocr(library, monkeypatch):
+    class FakeOcr:
+        @staticmethod
+        def process_isbn_photo(image_bytes):
+            return ["9780134685991", "0134685997"]
+
+    monkeypatch.setattr(library_mod, "ocr", FakeOcr)
+    result = library.scan_isbn_photo(b"fake image bytes")
+    assert result == ["9780134685991", "0134685997"]
+
+
+def test_scan_isbn_photo_ocr_unavailable_returns_empty_list(library, monkeypatch):
+    monkeypatch.setattr(library_mod, "ocr", None)
+    assert library.scan_isbn_photo(b"fake image bytes") == []
+
+
+def test_scan_isbn_photo_ocr_raises_is_caught(library, monkeypatch):
+    class ExplodingOcr:
+        @staticmethod
+        def process_isbn_photo(image_bytes):
+            raise RuntimeError("ocr_runtime unreachable")
+
+    monkeypatch.setattr(library_mod, "ocr", ExplodingOcr)
+    assert library.scan_isbn_photo(b"fake image bytes") == []
+
+
+# ---------------------------------------------------------------------------
+# import_csv
+# ---------------------------------------------------------------------------
+
+
+def test_import_csv_adds_valid_rows(library):
+    csv_text = (
+        "title,authors,isbn13,room,shelf\n"
+        "Dune,Frank Herbert,9780441013593,Living Room,3\n"
+        "Foundation,Isaac Asimov,9780553293357,Office,1\n"
+    )
+    result = library.import_csv(csv_text)
+    assert result == {"added": 2, "skipped": 0, "errors": []}
+    titles = {b.title for b in library.list_all_books()}
+    assert titles == {"Dune", "Foundation"}
+
+
+def test_import_csv_skips_row_with_existing_isbn(library):
+    library.add_book(make_book(title="Dune", isbn13="9780441013593"))
+    csv_text = "title,authors,isbn13\nDune (dup),Frank Herbert,9780441013593\n"
+    result = library.import_csv(csv_text)
+    assert result == {"added": 0, "skipped": 1, "errors": []}
+    assert len(library.list_all_books()) == 1
+
+
+def test_import_csv_row_with_no_isbn_always_added(library):
+    csv_text = "title,authors,isbn13\nNo ISBN Book,Some Author,\n"
+    result = library.import_csv(csv_text)
+    assert result == {"added": 1, "skipped": 0, "errors": []}
+
+
+def test_import_csv_malformed_row_counted_as_error(library):
+    csv_text = "title,page_count\nBad Page Count,not-a-number\n"
+    result = library.import_csv(csv_text)
+    assert result["added"] == 0
+    assert result["skipped"] == 0
+    assert len(result["errors"]) == 1
+
+
+def test_import_csv_empty_string_returns_zero_counts(library):
+    assert library.import_csv("") == {"added": 0, "skipped": 0, "errors": []}
+
+
+def test_import_csv_header_only_returns_zero_counts(library):
+    assert library.import_csv("title,authors,isbn13\n") == {"added": 0, "skipped": 0, "errors": []}
+
+
+def test_import_csv_plays_save_tone_when_rows_added(library):
+    library.import_csv("title,isbn13\nSome Book,9781111111111\n")
+    assert "play_save" in library.hw.calls
+
+
+def test_import_csv_semicolon_joined_authors_and_categories(library):
+    csv_text = "title,authors,categories\nMulti Author Book,Author One;Author Two,Fiction;Adventure\n"
+    library.import_csv(csv_text)
+    book = library.list_all_books()[0]
+    assert book.authors == ["Author One", "Author Two"]
+    assert book.categories == ["Fiction", "Adventure"]
+
+
+# ---------------------------------------------------------------------------
 # book_to_dict
 # ---------------------------------------------------------------------------
 

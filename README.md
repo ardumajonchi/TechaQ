@@ -42,6 +42,10 @@ and the systemd user service that runs `host/scanner_reader.py`.
   decoded digits. A scan POSTs to `/api/scan`, which looks up the code and auto-saves on a hit.
 - **Manual**: fill in the Add Book form yourself — every field a scan would populate is
   editable, plus the four location fields.
+- **Look up an ISBN**: type (or paste) an ISBN/EAN to preview its metadata before saving, or tap
+  "Scan ISBN from photo" to photograph the barcode's printed digits instead of typing — the same
+  `ocr_runtime` OCR pipeline reads the digits, offers up any plausible ISBN-looking candidates for
+  you to pick, and fills the lookup field for you to confirm.
 - **Shelf photo**: capture or upload a photo of several book spines. TechaQ preprocesses the
   image (grayscale/contrast, tries multiple rotations since spines are usually vertical), OCRs
   it via the `ocr_runtime` Brick, and asks the local LLM to pull out title/author guesses. Each
@@ -55,6 +59,16 @@ and the systemd user service that runs `host/scanner_reader.py`.
 - **"Describe it to find it"** lets you type a natural-language description (e.g. "that book
   about a kid wizard and his owl") — a local LLM turns it into a search-tool call and only ever
   returns real matches; it can never invent a book that doesn't exist in the search results.
+- **Grid or list view** — toggle the Library between a cover-art grid and a compact table, and
+  export whatever's currently displayed (after a search or filter) as a CSV file.
+
+### Settings
+
+- **Import / export the whole library as CSV** — export every book to a CSV file, or import a
+  CSV of books in that same format; rows whose ISBN already matches a book already in the
+  library are skipped rather than duplicated.
+- **Barcode scanner device exclusion** — exclude a misbehaving HID device (e.g. a real attached
+  keyboard) from the host-side scanner-reading service; see [`host/README.md`](host/README.md).
 
 ### Editing and deleting
 
@@ -78,7 +92,13 @@ the same screen.
   `apt-get install tesseract-ocr`) exposing a small HTTP OCR service, following the same shape
   as `scummvm-q`'s custom runtime Brick. `python/engine/ocr.py` preprocesses the image with
   Pillow, calls the service, and has the local LLM extract `{title, author}` candidates from
-  the raw OCR text — explicitly allowed to say "unknown" rather than guess.
+  the raw OCR text — explicitly allowed to say "unknown" rather than guess. The same
+  preprocess/OCR pipeline backs photo-to-ISBN scanning, but pattern-matches digit runs instead
+  of calling the LLM, since there's no free text to interpret.
+- **CSV import/export.** `python/engine/library.py`'s `import_csv` parses rows with the stdlib
+  `csv` module and adds each through the same `add_book` path as every other entry point,
+  skipping (and counting) rows whose ISBN already exists in the library — export is a client-side
+  reformatting of whatever's already loaded, so no separate backend route is needed for it.
 - **Barcode scanner.** `host/scanner_reader.py` runs on the board's host OS (not inside the
   app container — HID input devices aren't reachable from in-container, see
   [`host/README.md`](host/README.md)) and POSTs decoded scans to the app's own `/api/scan`

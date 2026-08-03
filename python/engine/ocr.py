@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 
 import requests
 from PIL import Image, ImageOps
@@ -201,3 +202,58 @@ def process_shelf_photo(image_bytes: bytes, llm=None) -> list[dict]:
         return []
 
     return extract_candidates(best_text, llm=llm)
+
+
+# Any run of digits (allowing embedded hyphens/spaces, which get stripped before length-checking)
+# 10 or 13 digits long -- ISBN-10 and ISBN-13/EAN-13 are the only two lengths a real book barcode
+# or printed ISBN string uses, so no LLM call is needed here, just pattern matching on digits.
+# Note: the separator class uses a literal space (not \s), so a run never spans a newline and
+# merges two separate lines' digit sequences into one non-matching blob.
+_DIGIT_RUN_RE = re.compile(r"[\d][\d\- ]*[\d]")
+
+
+def extract_isbn_candidates(raw_text: str) -> list[str]:
+    """Scan raw OCR text for plausible ISBN-13/ISBN-10 digit sequences (e.g. from a photo of a
+    barcode's printed digits, or a book cover showing its ISBN). Candidates are de-duplicated
+    and 13-digit sequences prefixed 978/979 (the Bookland EAN-13 prefixes) are sorted first,
+    since they're the most likely to actually be an ISBN rather than some other printed number.
+
+    Always returns a list (possibly empty) -- never raises, even on garbage input.
+    """
+    if not raw_text:
+        return []
+
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for match in _DIGIT_RUN_RE.finditer(raw_text):
+        digits = re.sub(r"[\- ]", "", match.group(0))
+        if len(digits) in (10, 13) and digits not in seen:
+            seen.add(digits)
+            candidates.append(digits)
+
+    candidates.sort(key=lambda d: 0 if len(d) == 13 and d[:3] in ("978", "979") else 1)
+    return candidates
+
+
+def process_isbn_photo(image_bytes: bytes) -> list[str]:
+    """Orchestrates the photo-to-ISBN pipeline: preprocess -> OCR each rotation variant -> keep
+    the variant with the most text -> extract plausible ISBN digit sequences. Mirrors
+    process_shelf_photo()'s shape, but skips the LLM step entirely since this is pattern
+    matching on digits, not free-text title/author extraction.
+
+    Always returns a list (possibly empty) -- never raises.
+    """
+    variants = preprocess_image(image_bytes)
+    if not variants:
+        return []
+
+    best_text = ""
+    for variant in variants:
+        text = call_ocr_service(variant)
+        if len(text) > len(best_text):
+            best_text = text
+
+    if not best_text.strip():
+        return []
+
+    return extract_isbn_candidates(best_text)
