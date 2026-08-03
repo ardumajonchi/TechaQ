@@ -1,0 +1,11 @@
+name: "TechaQ"
+description: "A home book-collection inventory manager: scan EAN barcodes with a USB/Bluetooth HID scanner, auto-fetch cover/synopsis metadata from public book APIs, track shelf location, search by keyword or AI description, and OCR shelf-spine photos."
+icon: "📚"
+ports:
+  - 7000
+bricks:
+  - arduino:web_ui: {}
+  - arduino:dbstorage_sqlstore: {}
+  - arduino:llm: {}
+  - ocr_runtime: {}
+gh_repo: "ardumajonchi/TechaQ"

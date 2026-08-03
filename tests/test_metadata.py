@@ -1,0 +1,382 @@
+# SPDX-FileCopyrightText: Copyright (C) TechaQ contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+"""Tests for engine/metadata.py: fetch_by_isbn (Open Library + Google Books merge logic, richer-
+value-wins, graceful 429/error handling, cover-image fallback) and search_by_title_author (Open
+Library search parsing, empty-on-error). All network access is mocked via monkeypatching
+requests.get -- no real HTTP calls are made.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+import requests
+
+from engine import metadata
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, json_data=None, content=b"", headers=None):
+        self.status_code = status_code
+        self._json_data = json_data
+        self.content = content
+        self.headers = headers or {}
+
+    def json(self):
+        if self._json_data is None:
+            raise ValueError("no json body")
+        return self._json_data
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(f"HTTP {self.status_code}")
+
+
+def _openlibrary_books_response(isbn, title="Dune", authors=("Frank Herbert",), publisher="Ace",
+                                 published_date="1965", page_count=412, subjects=("Sci-Fi",),
+                                 subtitle=""):
+    return FakeResponse(
+        json_data={
+            f"ISBN:{isbn}": {
+                "title": title,
+                "subtitle": subtitle,
+                "authors": [{"name": a} for a in authors],
+                "publishers": [{"name": publisher}] if publisher else [],
+                "publish_date": published_date,
+                "number_of_pages": page_count,
+                "subjects": [{"name": s} for s in subjects],
+            }
+        }
+    )
+
+
+def _googlebooks_response(title="Dune", authors=("Frank Herbert",), publisher="Ace Books",
+                           published_date="1965-06-01", description="A desert planet epic.",
+                           categories=("Fiction",), page_count=420, language="en",
+                           thumbnail="https://books.google.com/thumb.jpg"):
+    image_links = {"thumbnail": thumbnail} if thumbnail else {}
+    return FakeResponse(
+        json_data={
+            "items": [
+                {
+                    "volumeInfo": {
+                        "title": title,
+                        "authors": list(authors),
+                        "publisher": publisher,
+                        "publishedDate": published_date,
+                        "description": description,
+                        "categories": list(categories),
+                        "pageCount": page_count,
+                        "language": language,
+                        "imageLinks": image_links,
+                    }
+                }
+            ]
+        }
+    )
+
+
+def _cover_response(size=5000, content_type="image/jpeg"):
+    return FakeResponse(status_code=200, content=b"x" * size, headers={"Content-Type": content_type})
+
+
+def _no_cover_response():
+    # Open Library's "no cover" placeholder: a real but tiny gif (under ~1KB).
+    return FakeResponse(status_code=200, content=b"g" * 40, headers={"Content-Type": "image/gif"})
+
+
+def _dispatch(mapping):
+    """Build a fake requests.get(url, **kwargs) that looks up a canned response by URL prefix."""
+
+    def fake_get(url, **kwargs):
+        for prefix, response in mapping.items():
+            if url.startswith(prefix):
+                return response(**kwargs) if callable(response) and not isinstance(response, FakeResponse) else response
+        raise AssertionError(f"unexpected URL requested: {url}")
+
+    return fake_get
+
+
+# ---------------------------------------------------------------------------
+# fetch_by_isbn
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_by_isbn_merges_both_sources(monkeypatch):
+    isbn = "9780441172719"
+    mapping = {
+        metadata._OPENLIBRARY_BOOKS_URL: _openlibrary_books_response(isbn, publisher="Ace"),
+        metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn): _cover_response(),
+        metadata._GOOGLE_BOOKS_URL: _googlebooks_response(publisher="Ace Books"),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+
+    record = metadata.fetch_by_isbn(isbn)
+
+    assert record is not None
+    assert record.title == "Dune"
+    assert record.authors == ["Frank Herbert"]
+    assert record.isbn13 == isbn
+    assert record.source == "openlibrary+googlebooks"
+    # Open Library's cover wins when it has one.
+    assert record.cover_image == b"x" * 5000
+    # description only came from Google Books.
+    assert record.description == "A desert planet epic."
+
+
+def test_fetch_by_isbn_richer_value_wins_for_description_and_authors(monkeypatch):
+    isbn = "9780441172719"
+    # Both sources provide authors; Google has more of them, so it should win.
+    ol_resp = _openlibrary_books_response(isbn, authors=("Frank Herbert",))
+    gb_resp = _googlebooks_response(authors=("Frank Herbert", "Brian Herbert"), thumbnail="")
+    mapping = {
+        metadata._OPENLIBRARY_BOOKS_URL: ol_resp,
+        metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn): _no_cover_response(),
+        metadata._GOOGLE_BOOKS_URL: gb_resp,
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+
+    record = metadata.fetch_by_isbn(isbn)
+
+    assert record.authors == ["Frank Herbert", "Brian Herbert"]
+    # No cover from either source (OL placeholder rejected, Google had no thumbnail).
+    assert record.cover_image is None
+
+
+def test_fetch_by_isbn_openlibrary_only(monkeypatch):
+    isbn = "9780441172719"
+    mapping = {
+        metadata._OPENLIBRARY_BOOKS_URL: _openlibrary_books_response(isbn),
+        metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn): _cover_response(),
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+
+    record = metadata.fetch_by_isbn(isbn)
+
+    assert record is not None
+    assert record.source == "openlibrary"
+    assert record.title == "Dune"
+    assert record.description == ""
+
+
+def test_fetch_by_isbn_googlebooks_only(monkeypatch):
+    isbn = "9780441172719"
+    mapping = {
+        metadata._OPENLIBRARY_BOOKS_URL: FakeResponse(status_code=200, json_data={}),
+        metadata._GOOGLE_BOOKS_URL: _googlebooks_response(thumbnail="https://books.google.com/thumb.jpg"),
+        "https://books.google.com/thumb.jpg": _cover_response(size=2000, content_type="image/png"),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+
+    record = metadata.fetch_by_isbn(isbn)
+
+    assert record is not None
+    assert record.source == "googlebooks"
+    assert record.title == "Dune"
+    assert record.description == "A desert planet epic."
+    # falls back to Google's thumbnail since Open Library had no cover at all.
+    assert record.cover_image == b"x" * 2000
+
+
+def test_fetch_by_isbn_both_sources_empty_returns_none(monkeypatch):
+    isbn = "0000000000000"
+    mapping = {
+        metadata._OPENLIBRARY_BOOKS_URL: FakeResponse(status_code=200, json_data={}),
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+
+    assert metadata.fetch_by_isbn(isbn) is None
+
+
+def test_fetch_by_isbn_google_429_handled_gracefully(monkeypatch):
+    isbn = "9780441172719"
+    mapping = {
+        metadata._OPENLIBRARY_BOOKS_URL: _openlibrary_books_response(isbn),
+        metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn): _no_cover_response(),
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=429, json_data={"error": "rate limited"}),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+
+    record = metadata.fetch_by_isbn(isbn)
+
+    assert record is not None
+    assert record.source == "openlibrary"
+    assert record.title == "Dune"
+
+
+def test_fetch_by_isbn_googlebooks_connection_error_does_not_raise(monkeypatch):
+    isbn = "9780441172719"
+
+    def fake_get(url, **kwargs):
+        if url.startswith(metadata._GOOGLE_BOOKS_URL):
+            raise requests.exceptions.ConnectionError("boom")
+        if url.startswith(metadata._OPENLIBRARY_BOOKS_URL):
+            return _openlibrary_books_response(isbn)
+        if url.startswith(metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn)):
+            return _no_cover_response()
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    record = metadata.fetch_by_isbn(isbn)
+
+    assert record is not None
+    assert record.source == "openlibrary"
+
+
+def test_fetch_by_isbn_openlibrary_error_does_not_kill_googlebooks_data(monkeypatch):
+    isbn = "9780441172719"
+
+    def fake_get(url, **kwargs):
+        if url.startswith(metadata._OPENLIBRARY_BOOKS_URL):
+            raise requests.exceptions.Timeout("slow")
+        if url.startswith(metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn)):
+            raise requests.exceptions.Timeout("slow")
+        if url.startswith(metadata._GOOGLE_BOOKS_URL):
+            return _googlebooks_response(thumbnail="")
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    record = metadata.fetch_by_isbn(isbn)
+
+    assert record is not None
+    assert record.source == "googlebooks"
+    assert record.title == "Dune"
+
+
+def test_fetch_by_isbn_strips_non_digits_from_raw_barcode(monkeypatch):
+    raw_barcode = "978-0-441-17271-9"
+    clean = "9780441172719"
+    seen_urls = []
+
+    def fake_get(url, **kwargs):
+        seen_urls.append(url)
+        if url.startswith(metadata._OPENLIBRARY_BOOKS_URL):
+            assert kwargs["params"]["bibkeys"] == f"ISBN:{clean}"
+            return _openlibrary_books_response(clean)
+        if url.startswith(metadata._OPENLIBRARY_COVER_URL.format(isbn=clean)):
+            return _no_cover_response()
+        if url.startswith(metadata._GOOGLE_BOOKS_URL):
+            assert kwargs["params"]["q"] == f"isbn:{clean}"
+            return FakeResponse(status_code=200, json_data={"items": []})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    record = metadata.fetch_by_isbn(raw_barcode)
+
+    assert record is not None
+    assert record.isbn13 == clean
+
+
+def test_fetch_by_isbn_empty_input_returns_none():
+    assert metadata.fetch_by_isbn("") is None
+    assert metadata.fetch_by_isbn("   ") is None
+
+
+def test_fetch_by_isbn_uses_env_api_key(monkeypatch):
+    isbn = "9780441172719"
+    monkeypatch.setenv("GOOGLE_BOOKS_API_KEY", "secret-key")
+
+    def fake_get(url, **kwargs):
+        if url.startswith(metadata._OPENLIBRARY_BOOKS_URL):
+            return FakeResponse(status_code=200, json_data={})
+        if url.startswith(metadata._GOOGLE_BOOKS_URL):
+            assert kwargs["params"]["key"] == "secret-key"
+            return _googlebooks_response(thumbnail="")
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    record = metadata.fetch_by_isbn(isbn)
+    assert record is not None
+
+
+# ---------------------------------------------------------------------------
+# search_by_title_author
+# ---------------------------------------------------------------------------
+
+
+def test_search_by_title_author_parses_docs(monkeypatch):
+    def fake_get(url, **kwargs):
+        if url.startswith(metadata._OPENLIBRARY_SEARCH_URL):
+            assert "Dune" in kwargs["params"]["q"]
+            return FakeResponse(
+                json_data={
+                    "docs": [
+                        {
+                            "title": "Dune",
+                            "author_name": ["Frank Herbert"],
+                            "first_publish_year": 1965,
+                            "isbn": ["9780441172719", "0441172717"],
+                            "cover_i": 12345,
+                        }
+                    ]
+                }
+            )
+        if url.startswith(metadata._OPENLIBRARY_COVER_BY_ID_URL.format(cover_id=12345)):
+            return _cover_response(size=3000)
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    results = metadata.search_by_title_author("Dune", "Frank Herbert")
+
+    assert len(results) == 1
+    book = results[0]
+    assert book.title == "Dune"
+    assert book.authors == ["Frank Herbert"]
+    assert book.published_date == "1965"
+    assert book.isbn13 == "9780441172719"
+    assert book.cover_image == b"x" * 3000
+    assert book.source == "openlibrary"
+
+
+def test_search_by_title_author_no_cover_id_skips_download(monkeypatch):
+    def fake_get(url, **kwargs):
+        if url.startswith(metadata._OPENLIBRARY_SEARCH_URL):
+            return FakeResponse(json_data={"docs": [{"title": "Foundation", "author_name": []}]})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    results = metadata.search_by_title_author("Foundation")
+
+    assert len(results) == 1
+    assert results[0].cover_image is None
+
+
+def test_search_by_title_author_returns_empty_list_on_error(monkeypatch):
+    def fake_get(url, **kwargs):
+        raise requests.exceptions.ConnectionError("network down")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    assert metadata.search_by_title_author("Dune") == []
+
+
+def test_search_by_title_author_returns_empty_list_on_bad_json(monkeypatch):
+    def fake_get(url, **kwargs):
+        return FakeResponse(status_code=200, json_data=None)  # .json() raises ValueError
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    assert metadata.search_by_title_author("Dune") == []
+
+
+def test_search_by_title_author_empty_query_returns_empty_list():
+    assert metadata.search_by_title_author("", "") == []
+
+
+def test_search_by_title_author_http_error_status_returns_empty_list(monkeypatch):
+    def fake_get(url, **kwargs):
+        return FakeResponse(status_code=500, json_data={})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    assert metadata.search_by_title_author("Dune") == []

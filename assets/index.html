@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TechaQ</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <h1>📚 TechaQ</h1>
+      <p class="tagline">Home book inventory</p>
+    </header>
+
+    <nav id="tabbar">
+      <button class="tab-btn active" data-view="scan">
+        <span class="tab-icon">📷</span><span class="tab-label">Scan/Add</span>
+      </button>
+      <button class="tab-btn" data-view="library">
+        <span class="tab-icon">📖</span><span class="tab-label">Library</span>
+      </button>
+      <button class="tab-btn" data-view="ai">
+        <span class="tab-icon">✨</span><span class="tab-label">Ask AI</span>
+      </button>
+      <button class="tab-btn" data-view="shelf">
+        <span class="tab-icon">🖼️</span><span class="tab-label">Shelf Photo</span>
+      </button>
+      <button class="tab-btn" data-view="settings">
+        <span class="tab-icon">⚙️</span><span class="tab-label">Settings</span>
+      </button>
+    </nav>
+
+    <main id="content">
+
+      <!-- ============================== Scan / Add ============================== -->
+      <section class="view active" id="view-scan">
+        <div class="card">
+          <h2>Recent scans</h2>
+          <p class="hint">Live feed from a connected USB/Bluetooth barcode scanner. Scanning an
+            ISBN/EAN auto-saves the book if metadata is found.</p>
+          <ul id="scan-log" class="log-list">
+            <li class="empty">No scans yet. Scan a barcode, or look one up below.</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h2>Look up an ISBN</h2>
+          <p class="hint">Preview a book's metadata before saving it.</p>
+          <div class="input-row">
+            <input id="isbn-lookup-input" type="text" inputmode="numeric" placeholder="ISBN or EAN, e.g. 9780134685991">
+            <button id="isbn-lookup-btn">Look up</button>
+          </div>
+          <div id="isbn-lookup-result"></div>
+        </div>
+
+        <div class="card">
+          <h2>Manual entry</h2>
+          <p class="hint">Fallback for books with no barcode, or when metadata lookup fails.</p>
+          <form id="manual-add-form" class="book-form">
+            <div class="form-grid">
+              <label>Title <input name="title" required></label>
+              <label>Subtitle <input name="subtitle"></label>
+              <label>Authors <input name="authors" placeholder="comma-separated"></label>
+              <label>ISBN-13 <input name="isbn13" inputmode="numeric"></label>
+              <label>ISBN-10 <input name="isbn10" inputmode="numeric"></label>
+              <label>Publisher <input name="publisher"></label>
+              <label>Published date <input name="published_date" placeholder="YYYY or YYYY-MM-DD"></label>
+              <label>Page count <input name="page_count" type="number" min="0"></label>
+              <label>Language <input name="language" placeholder="en"></label>
+              <label>Categories <input name="categories" placeholder="comma-separated"></label>
+              <label class="span-2">Description <textarea name="description" rows="2"></textarea></label>
+              <label>Room <input name="room" list="loc-room-options"></label>
+              <label>Floor <input name="floor" list="loc-floor-options"></label>
+              <label>Column <input name="column" list="loc-column-options"></label>
+              <label>Shelf <input name="shelf" list="loc-shelf-options"></label>
+              <label class="span-2">Notes <textarea name="notes" rows="2"></textarea></label>
+            </div>
+            <button type="submit">Save book</button>
+            <p class="status" id="manual-add-status"></p>
+          </form>
+        </div>
+      </section>
+
+      <!-- ================================ Library ================================ -->
+      <section class="view" id="view-library">
+        <div class="card">
+          <h2>Search &amp; filter</h2>
+          <div class="input-row">
+            <input id="library-search-input" type="text" placeholder="Search title, author, notes...">
+            <button id="library-search-btn">Search</button>
+          </div>
+          <div class="filter-grid">
+            <label>Room <select id="filter-room"><option value="">Any</option></select></label>
+            <label>Floor <select id="filter-floor"><option value="">Any</option></select></label>
+            <label>Column <select id="filter-column"><option value="">Any</option></select></label>
+            <label>Shelf <select id="filter-shelf"><option value="">Any</option></select></label>
+          </div>
+          <button id="library-clear-btn" class="secondary">Clear filters</button>
+        </div>
+
+        <div id="library-grid" class="book-grid">
+          <p class="empty">Loading...</p>
+        </div>
+      </section>
+
+      <!-- ================================= Ask AI ================================= -->
+      <section class="view" id="view-ai">
+        <div class="card">
+          <h2>Describe the book you're thinking of</h2>
+          <p class="hint">e.g. "the one with the sandworms and the desert planet" -- the AI turns
+            your description into a search against your library's metadata sources.</p>
+          <textarea id="ai-description-input" rows="3" placeholder="Describe the book..."></textarea>
+          <button id="ai-search-btn">Ask AI</button>
+          <p class="status" id="ai-search-status"></p>
+        </div>
+        <div id="ai-results" class="book-grid"></div>
+      </section>
+
+      <!-- =============================== Shelf Photo =============================== -->
+      <section class="view" id="view-shelf">
+        <div class="card">
+          <h2>Photograph a shelf</h2>
+          <p class="hint">Take (or upload) a photo of a shelf of book spines. OCR + metadata
+            lookup will guess titles/authors -- review and edit before saving.</p>
+          <input id="shelf-photo-input" type="file" accept="image/*" capture="environment">
+          <p class="status" id="shelf-photo-status"></p>
+        </div>
+        <div id="shelf-candidates"></div>
+        <button id="shelf-save-btn" class="hidden">Save selected</button>
+      </section>
+
+      <!-- ================================ Settings ================================ -->
+      <section class="view" id="view-settings">
+        <div class="card">
+          <h2>Barcode scanner device exclusion</h2>
+          <p class="hint">
+            The barcode scanner is read by a host-side service (<code>host/scanner_reader.py</code>),
+            outside this app's container, since raw USB/Bluetooth HID input devices aren't reachable
+            from inside it. That service watches every keyboard-like input device by default, which
+            can pick up a real attached keyboard by mistake.
+          </p>
+          <p class="hint">
+            To exclude a device, add a case-insensitive substring of its name to a plain JSON list at
+            this path <strong>on the board's host OS</strong> (not inside this app's container):
+          </p>
+          <pre class="code-block">~/.config/techaq/excluded_devices.json</pre>
+          <p class="hint">Example contents:</p>
+          <pre class="code-block">["Logitech", "My Keyboard"]</pre>
+          <p class="hint">
+            This file is only read once, at startup -- after editing it, restart the scanner
+            service on the board:
+          </p>
+          <pre class="code-block">systemctl --user restart techaq-scanner.service</pre>
+          <p class="hint">
+            This page is informational only for now; there's no in-app editor for this file yet
+            since it lives outside this app's container filesystem.
+          </p>
+        </div>
+
+        <div class="card">
+          <h2>About</h2>
+          <p class="hint">TechaQ -- a home book-collection inventory manager for the Arduino UNO Q.
+            Scans EAN/ISBN barcodes, fetches metadata from Open Library / Google Books, tracks
+            shelf location, and supports natural-language and shelf-photo (OCR) search/entry.</p>
+        </div>
+      </section>
+
+    </main>
+
+    <div id="toast-container"></div>
+
+    <!-- shared datalists for location autocomplete across views -->
+    <datalist id="loc-room-options"></datalist>
+    <datalist id="loc-floor-options"></datalist>
+    <datalist id="loc-column-options"></datalist>
+    <datalist id="loc-shelf-options"></datalist>
+
+    <!-- book detail/edit modal -->
+    <div id="book-modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <button class="modal-close" id="book-modal-close">&times;</button>
+        <div id="book-modal-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="libs/socket.io.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

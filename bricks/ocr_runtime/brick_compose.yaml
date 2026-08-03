@@ -1,0 +1,11 @@
+services:
+  ocr_runtime:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6098/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s

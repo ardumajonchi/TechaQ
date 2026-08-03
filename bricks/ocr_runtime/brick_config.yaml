@@ -1,0 +1,8 @@
+id: ocr_runtime
+name: OCR Runtime (Tesseract)
+description: "Headless Tesseract OCR HTTP service for shelf-spine text extraction from photos"
+category: image
+supported_boards: ["unoq"]
+requires_container: true
+ports:
+  - 6098

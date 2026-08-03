@@ -1,0 +1,272 @@
+# SPDX-FileCopyrightText: Copyright (C) TechaQ contributors
+#
+# SPDX-License-Identifier: MPL-2.0
+"""The ONE real code path for every TechaQ mutation/query. Both python/main.py (WebUI REST/WS
+handlers) and python/cli.py call into this module's `Library` class exclusively -- neither surface
+is ever allowed to touch `BookDB`, `Hardware`, `metadata`, `ai_search`, or `ocr` directly, so
+there's exactly one place that decides what "add a book", "search", "delete", etc. actually mean.
+
+Three sibling modules are being built in parallel by teammates and may not exist yet, or may exist
+but fail to construct/run on a given board (no network, no LLM brick, tesseract missing, etc.):
+  - engine/metadata.py   -- fetch_by_isbn(isbn) -> BookRecord | None
+                             search_by_title_author(title, author="") -> list[BookRecord]
+  - engine/ai_search.py  -- class AISearchAgent with .available: bool and
+                             .describe_to_find(description) -> list[BookRecord]
+  - engine/ocr.py        -- process_shelf_photo(image_bytes, llm=None) -> list[dict] of
+                             {"title":..., "author":...} candidate guesses (NOT resolved yet)
+  - hw.py (python/hw.py) -- class Hardware with play_scan/play_save/play_search/play_error/
+                             play_delete/play_startup, each already a no-op-on-failure per its own
+                             docstring; constructing Hardware() itself can raise with no MCU/Bridge.
+
+Every one of those is defensively imported (try/except at import time) and defensively used
+(try/except around every call, in addition to whatever the callee already guards) so a missing or
+broken teammate module degrades a single feature (metadata lookups return None/[], AI search
+reports unavailable, OCR returns no candidates, the buzzer stays silent) without ever taking the
+whole app down. This module's own methods therefore never raise for "the dependency isn't ready"
+-- only for genuinely programmer-error inputs (e.g. BookDB itself being unreachable).
+"""
+
+from __future__ import annotations
+
+import base64
+from dataclasses import asdict
+
+from .db import BookDB
+from .models import BookRecord
+
+try:
+    from . import metadata
+except ImportError as exc:  # engine/metadata.py not written yet, or failed to import
+    metadata = None
+    print(f"[techaq] engine.metadata unavailable, ISBN/title lookups disabled: {exc!r}")
+
+try:
+    from .ai_search import AISearchAgent
+except ImportError as exc:  # engine/ai_search.py not written yet, or failed to import
+    AISearchAgent = None
+    print(f"[techaq] engine.ai_search unavailable, AI describe-to-find disabled: {exc!r}")
+
+try:
+    from . import ocr
+except ImportError as exc:  # engine/ocr.py not written yet, or failed to import
+    ocr = None
+    print(f"[techaq] engine.ocr unavailable, shelf-photo OCR disabled: {exc!r}")
+
+try:
+    from hw import Hardware  # python/hw.py; flat import, python/ is the sys.path root (see main.py)
+except ImportError as exc:
+    Hardware = None
+    print(f"[techaq] hw module unavailable, buzzer disabled: {exc!r}")
+
+
+DB_NAME = "techaq.db"
+
+
+def book_to_dict(book: BookRecord, include_cover_data_uri: bool = False) -> dict:
+    """Render a BookRecord for JSON responses (REST API, OCR-candidate "resolved" field, etc).
+
+    `cover_image` (raw bytes) is never inlined directly -- BLOBs don't belong in a JSON payload
+    a browser has to parse. Saved books (book.id is not None) instead get a `cover_url` pointing
+    at GET /api/books/{id}/cover (see main.py's docstring for why that's a dedicated binary route
+    rather than base64-in-JSON). Books with no id yet (e.g. an OCR/metadata candidate the user
+    hasn't confirmed/saved) have no URL to hang a cover off, so when `include_cover_data_uri` is
+    set, the cover is instead inlined as a ready-to-use `data:` URI for an <img src=...>.
+    """
+    data = asdict(book)
+    cover_bytes = data.pop("cover_image", None)
+    data["has_cover"] = bool(cover_bytes)
+    data["cover_url"] = f"/api/books/{book.id}/cover" if (book.id is not None and cover_bytes) else None
+    if include_cover_data_uri and cover_bytes:
+        mime = book.cover_mime or "image/jpeg"
+        data["cover_data_uri"] = f"data:{mime};base64,{base64.b64encode(cover_bytes).decode('ascii')}"
+    return data
+
+
+class Library:
+    """Owns one BookDB, one (optional) Hardware, and one (optional) AISearchAgent. Every method
+    is safe to call even when a dependency never came up -- callers don't need to check anything
+    first, they just get an empty/None result for the degraded feature.
+    """
+
+    def __init__(
+        self,
+        db_name: str | None = None,
+        db: BookDB | None = None,
+        hw=None,
+        ai_agent=None,
+    ):
+        self.db = db if db is not None else BookDB(db_name or DB_NAME)
+
+        if hw is not None:
+            self.hw = hw
+        elif Hardware is not None:
+            try:
+                self.hw = Hardware()
+            except Exception as exc:
+                print(f"[techaq] Hardware init failed, running without MCU/Bridge: {exc!r}")
+                self.hw = None
+        else:
+            self.hw = None
+
+        if ai_agent is not None:
+            self.ai_agent = ai_agent
+        elif AISearchAgent is not None:
+            try:
+                self.ai_agent = AISearchAgent()
+            except Exception as exc:
+                print(f"[techaq] AISearchAgent init failed, AI search disabled: {exc!r}")
+                self.ai_agent = None
+        else:
+            self.ai_agent = None
+
+        self.metadata_available = metadata is not None
+        self.ocr_available = ocr is not None
+
+    def close(self) -> None:
+        self.db.stop()
+
+    # -- buzzer -------------------------------------------------------------------------------
+
+    def _buzz(self, method_name: str) -> None:
+        if self.hw is None:
+            return
+        try:
+            getattr(self.hw, method_name)()
+        except Exception as exc:
+            print(f"[techaq] hw.{method_name}() failed, ignoring: {exc!r}")
+
+    def notify_scan_received(self) -> None:
+        """Called the instant a scan code is received (before lookup/save), independent of
+        whether the lookup succeeds -- gives the user audible feedback that the scanner worked."""
+        self._buzz("play_scan")
+
+    def notify_startup(self) -> None:
+        """Called once from main.py right after construction, so the board beeps to confirm the
+        app process (and its MCU/Bridge link) came up -- mirrors progq's/scummvm-q's hw.play_startup()."""
+        self._buzz("play_startup")
+
+    # -- CRUD -----------------------------------------------------------------------------------
+
+    def add_book(self, book: BookRecord) -> int:
+        book_id = self.db.insert(book)
+        self._buzz("play_save")
+        return book_id
+
+    def add_by_isbn(self, isbn: str) -> BookRecord | None:
+        if metadata is None:
+            self._buzz("play_error")
+            return None
+        try:
+            book = metadata.fetch_by_isbn(isbn)
+        except Exception as exc:
+            print(f"[techaq] metadata.fetch_by_isbn({isbn!r}) failed: {exc!r}")
+            book = None
+        if book is None:
+            self._buzz("play_error")
+            return None
+        book_id = self.add_book(book)
+        book.id = book_id
+        return book
+
+    def lookup_isbn(self, isbn: str) -> BookRecord | None:
+        """Look up only, never saves -- used by POST /api/lookup/{isbn} for a scan-preview UX."""
+        if metadata is None:
+            return None
+        try:
+            return metadata.fetch_by_isbn(isbn)
+        except Exception as exc:
+            print(f"[techaq] metadata.fetch_by_isbn({isbn!r}) failed: {exc!r}")
+            return None
+
+    def update_book(self, book_id: int, book: BookRecord) -> None:
+        self.db.update(book_id, book)
+
+    def delete_book(self, book_id: int) -> None:
+        self.db.delete(book_id)
+        self._buzz("play_delete")
+
+    def get_book(self, book_id: int) -> BookRecord | None:
+        return self.db.get(book_id)
+
+    def list_all_books(self, order_by: str = "updated_at DESC") -> list[BookRecord]:
+        return self.db.list_all(order_by=order_by)
+
+    def search_books(self, keyword: str) -> list[BookRecord]:
+        self._buzz("play_search")
+        return self.db.search(keyword)
+
+    def list_by_location(
+        self, room: str = "", floor: str = "", column: str = "", shelf: str = ""
+    ) -> list[BookRecord]:
+        return self.db.filter_by_location(room=room, floor=floor, column=column, shelf=shelf)
+
+    def distinct_locations(self) -> dict[str, list[str]]:
+        return self.db.distinct_locations()
+
+    # -- AI describe-to-find ---------------------------------------------------------------------
+
+    def ai_describe_search(self, description: str) -> list[BookRecord]:
+        self._buzz("play_search")
+        if self.ai_agent is None or not getattr(self.ai_agent, "available", False):
+            return []
+        try:
+            return self.ai_agent.describe_to_find(description) or []
+        except Exception as exc:
+            print(f"[techaq] AISearchAgent.describe_to_find failed: {exc!r}")
+            return []
+
+    # -- shelf photo OCR ---------------------------------------------------------------------
+
+    def process_shelf_image(self, image_bytes: bytes) -> list[dict]:
+        """Run OCR to get title/author guesses, then resolve each guess against metadata for a
+        real BookRecord match. Nothing is saved here -- this is strictly "show the user candidates
+        to confirm"; saving happens via confirm_shelf_candidates() once the user picks which ones.
+        """
+        if ocr is None:
+            return []
+        try:
+            candidates = ocr.process_shelf_photo(image_bytes) or []
+        except Exception as exc:
+            print(f"[techaq] ocr.process_shelf_photo failed: {exc!r}")
+            return []
+
+        enriched = []
+        for candidate in candidates:
+            title = (candidate or {}).get("title", "") or ""
+            author = (candidate or {}).get("author", "") or ""
+            resolved = None
+            if metadata is not None and (title or author):
+                try:
+                    matches = metadata.search_by_title_author(title, author)
+                except Exception as exc:
+                    print(f"[techaq] metadata.search_by_title_author({title!r}, {author!r}) failed: {exc!r}")
+                    matches = []
+                if matches:
+                    resolved = book_to_dict(matches[0], include_cover_data_uri=True)
+            enriched.append({**candidate, "resolved": resolved})
+        return enriched
+
+    def confirm_shelf_candidates(self, book_dicts: list[dict]) -> list[int]:
+        """Save the subset of shelf-photo candidates the user confirmed in the browser. Each dict
+        is expected to match BookRecord field names (as produced by book_to_dict / the frontend's
+        editable candidate form) -- unknown keys are ignored, missing ones fall back to defaults.
+        """
+        known_fields = set(BookRecord.__dataclass_fields__) - {"id", "created_at", "updated_at"}
+        ids = []
+        for data in book_dicts or []:
+            data = dict(data or {})
+            cover_data_uri = data.pop("cover_data_uri", None)
+            values = {f: data[f] for f in known_fields if f in data and f != "cover_image"}
+            book = BookRecord(**values)
+            if cover_data_uri and isinstance(cover_data_uri, str) and "," in cover_data_uri:
+                try:
+                    book.cover_image = base64.b64decode(cover_data_uri.split(",", 1)[1])
+                except Exception as exc:
+                    print(f"[techaq] failed to decode cover_data_uri while confirming candidate: {exc!r}")
+            ids.append(self.add_book(book))
+        return ids
+
+
+def create_library(db_name: str | None = None) -> Library:
+    """Factory used by both main.py and cli.py so neither hand-rolls construction differently."""
+    return Library(db_name=db_name)
