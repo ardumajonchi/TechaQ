@@ -32,8 +32,10 @@ DEFAULT_OCR_PORT = 6098
 OCR_REQUEST_TIMEOUT_S = 15
 
 # Rotations tried in addition to the original orientation -- book spines on a shelf are usually
-# vertical text, so rotating the whole shelf photo makes spine text horizontal for OCR.
-_ROTATIONS = (0, 90, 270)
+# vertical text, so rotating the whole shelf photo makes spine text horizontal for OCR; 180 is
+# included too since a photo can be captured upside-down relative to the printed text (e.g. the
+# phone or the book itself flipped), which 90/270 alone can't recover.
+_ROTATIONS = (0, 90, 180, 270)
 
 
 def preprocess_image(image_bytes: bytes) -> list[bytes]:
@@ -236,10 +238,15 @@ def extract_isbn_candidates(raw_text: str) -> list[str]:
 
 
 def process_isbn_photo(image_bytes: bytes) -> list[str]:
-    """Orchestrates the photo-to-ISBN pipeline: preprocess -> OCR each rotation variant -> keep
-    the variant with the most text -> extract plausible ISBN digit sequences. Mirrors
-    process_shelf_photo()'s shape, but skips the LLM step entirely since this is pattern
-    matching on digits, not free-text title/author extraction.
+    """Orchestrates the photo-to-ISBN pipeline: preprocess -> OCR every rotation variant ->
+    extract plausible ISBN digit sequences from *each* variant's text and merge the results.
+
+    Unlike process_shelf_photo() (which only needs the single "best" text block for the LLM to
+    read), picking just the longest-text variant here actively hurts: a real book photo's ISBN
+    digits often sit in a small barcode caption, while a differently-rotated variant can OCR a
+    longer stretch of unrelated cover/blurb prose with no digits in it at all -- keeping only the
+    longest variant would discard the one that actually had the ISBN. Scanning every variant and
+    merging candidates (extract_isbn_candidates already dedupes) avoids that.
 
     Always returns a list (possibly empty) -- never raises.
     """
@@ -247,13 +254,16 @@ def process_isbn_photo(image_bytes: bytes) -> list[str]:
     if not variants:
         return []
 
-    best_text = ""
+    seen: set[str] = set()
+    candidates: list[str] = []
     for variant in variants:
         text = call_ocr_service(variant)
-        if len(text) > len(best_text):
-            best_text = text
+        if not text.strip():
+            continue
+        for digits in extract_isbn_candidates(text):
+            if digits not in seen:
+                seen.add(digits)
+                candidates.append(digits)
 
-    if not best_text.strip():
-        return []
-
-    return extract_isbn_candidates(best_text)
+    candidates.sort(key=lambda d: 0 if len(d) == 13 and d[:3] in ("978", "979") else 1)
+    return candidates

@@ -126,9 +126,9 @@ def test_extract_candidates_empty_raw_text_returns_empty_list():
 # ---------------------------------------------------------------------------
 
 
-def test_preprocess_image_returns_three_rotation_variants():
+def test_preprocess_image_returns_four_rotation_variants():
     variants = ocr.preprocess_image(_sample_image_bytes())
-    assert len(variants) == 3
+    assert len(variants) == 4
 
 
 def test_preprocess_image_variants_are_valid_images():
@@ -145,9 +145,12 @@ def test_preprocess_image_rotated_variants_swap_dimensions():
     sizes = [Image.open(io.BytesIO(v)).size for v in variants]
     # first variant (0 degrees) keeps original orientation
     assert sizes[0] == (width, height)
-    # 90/270-degree variants should have swapped width/height (expand=True)
+    # 90-degree variant swaps width/height (expand=True)
     assert sizes[1] == (height, width)
-    assert sizes[2] == (height, width)
+    # 180-degree variant keeps original orientation
+    assert sizes[2] == (width, height)
+    # 270-degree variant swaps width/height (expand=True)
+    assert sizes[3] == (height, width)
 
 
 def test_preprocess_image_invalid_input_returns_empty_list():
@@ -241,7 +244,7 @@ def test_process_shelf_photo_picks_longest_variant_text_and_extracts(monkeypatch
     monkeypatch.setattr(ocr, "call_ocr_service", fake_call_ocr_service)
 
     result = ocr.process_shelf_photo(_sample_image_bytes(), llm=None)
-    assert call_count["n"] == 3
+    assert call_count["n"] == 4
     titles = [c["title"] for c in result]
     assert "Dune II" in titles
     assert "Foundation" in titles
@@ -294,18 +297,33 @@ def test_extract_isbn_candidates_dedupes_and_prefers_978_979_prefix():
     assert result.count("9780134685991") == 1
 
 
-def test_process_isbn_photo_picks_longest_variant_and_extracts(monkeypatch):
+def test_process_isbn_photo_merges_candidates_across_all_variants(monkeypatch):
     call_count = {"n": 0}
 
     def fake_call_ocr_service(image_bytes, host=ocr.DEFAULT_OCR_HOST, port=ocr.DEFAULT_OCR_PORT):
         call_count["n"] += 1
-        return "5" if call_count["n"] != 2 else "9780134685991"
+        # the ISBN sits in a short variant's text; a *longer* variant has no digits at all --
+        # the old "keep only the longest text" heuristic would have discarded the ISBN entirely.
+        return "9780134685991" if call_count["n"] == 2 else "a much longer stretch of prose text"
 
     monkeypatch.setattr(ocr, "call_ocr_service", fake_call_ocr_service)
 
     result = ocr.process_isbn_photo(_sample_image_bytes())
-    assert call_count["n"] == 3
+    assert call_count["n"] == 4
     assert result == ["9780134685991"]
+
+
+def test_process_isbn_photo_tries_four_rotations_including_180(monkeypatch):
+    seen_sizes = []
+
+    def fake_call_ocr_service(image_bytes, host=ocr.DEFAULT_OCR_HOST, port=ocr.DEFAULT_OCR_PORT):
+        seen_sizes.append(len(image_bytes))
+        return ""
+
+    monkeypatch.setattr(ocr, "call_ocr_service", fake_call_ocr_service)
+
+    ocr.process_isbn_photo(_sample_image_bytes())
+    assert len(seen_sizes) == 4
 
 
 def test_process_isbn_photo_unreachable_service_returns_empty_list(monkeypatch):
