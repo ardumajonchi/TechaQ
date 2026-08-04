@@ -165,19 +165,24 @@ def _clean_creator_name(raw: str) -> str:
     return name.strip()
 
 
-def _fetch_sru_dc(base_url: str, query: str, isbn: str, source_name: str) -> dict:
-    """GET an SRU endpoint with an oai_dc/Dublin Core `recordSchema` and return a dict of fields
-    parsed from the first matching record, or {} on any failure/no-hit. Never raises. Shared by
-    every national-library SRU source (DNB, BNF) since they return the same XML shape."""
+def _fetch_sru_dc(
+    base_url: str, query: str, isbn: str, source_name: str, version: str = "1.2", record_schema: str = "dc"
+) -> dict:
+    """GET an SRU endpoint with a Dublin Core `recordSchema` and return a dict of fields parsed
+    from the first matching record, or {} on any failure/no-hit. Never raises. Shared by every
+    national-library SRU source (DNB, BNF) since they return the same XML shape -- but each
+    catalog enforces its own SRU `version`/`recordSchema` values (DNB rejects version 1.2 and the
+    bare "dc" schema, requiring 1.1/"oai_dc" instead; BNF requires the opposite), so callers pass
+    theirs explicitly rather than sharing one hardcoded pair."""
     out: dict = {}
     try:
         resp = requests.get(
             base_url,
             params={
-                "version": "1.2",
+                "version": version,
                 "operation": "searchRetrieve",
                 "query": query,
-                "recordSchema": "dc",
+                "recordSchema": record_schema,
                 "maximumRecords": 1,
             },
             timeout=_TIMEOUT,
@@ -220,8 +225,10 @@ def _fetch_sru_dc(base_url: str, query: str, isbn: str, source_name: str) -> dic
 
 def _fetch_dnb(isbn: str) -> dict:
     """Return a dict of fields found from the Deutsche Nationalbibliothek's free, keyless SRU
-    catalog, or {} on any failure/no-hit. Never raises."""
-    return _fetch_sru_dc(_DNB_SRU_URL, f"isbn={isbn}", isbn, "DNB")
+    catalog, or {} on any failure/no-hit. Never raises. DNB's SRU service rejects the SRU 1.2
+    protocol version and the bare "dc" recordSchema (both fine for BNF) with a diagnostic
+    response, not an HTTP error -- it needs 1.1/"oai_dc" specifically."""
+    return _fetch_sru_dc(_DNB_SRU_URL, f"isbn={isbn}", isbn, "DNB", version="1.1", record_schema="oai_dc")
 
 
 def _fetch_bnf(isbn: str) -> dict:
