@@ -139,6 +139,16 @@ the same screen.
   a `data-i18n*` attribute and every dynamic string (toasts, statuses) routes through `t()`. The
   light theme is a `[data-theme="light"]` CSS-variable override block in `style.css` — every
   other rule in the file already consumes those variables, so no other CSS changes were needed.
+- **Live ISBN lookup status.** An "Look up an ISBN" preview no longer just shows a static
+  "Looking up..." message: `engine/metadata.py`'s `fetch_by_isbn` reports each of its four
+  concurrent catalog fetches (Open Library, Google Books, DNB, BNF) the moment that source's own
+  thread finishes, in whatever order they actually complete; `library.py`'s `lookup_isbn` and
+  `main.py` relay each step over the same Socket.IO channel as scan/save toasts as a `lookup_status`
+  event, and `app.js` renders a per-source checklist that flips from spinner to check/miss live,
+  followed by "Searching the web..." if every catalog misses and the web-search fallback kicks in.
+  Purely cosmetic transparency, not a new code path: the REST response that actually resolves the
+  lookup is unchanged, so a tab with no Socket.IO connection just keeps the plain static message
+  and still works.
 - **Installable app icon.** `assets/icons/` (favicon, Apple touch icon, and 192/512px "any" +
   "maskable" PNGs) plus `assets/manifest.json` mean "Add to Home Screen" on iOS, Android, and
   desktop Chrome saves TechaQ with its own book icon instead of a browser-tab screenshot;

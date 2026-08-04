@@ -307,6 +307,102 @@ def test_lookup_isbn_passes_settings_fetch_synopsis_default(library, monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# lookup_isbn's optional on_status callback (live per-source UI progress) --
+# must be entirely opt-in: a caller (or test double) that never asks for it
+# should see identical behavior to before this callback existed, which is
+# exactly what every FakeMetadata/FakeMetadataMiss above -- none of which
+# declare `on_source_done` or `SOURCE_NAMES` -- already exercises implicitly.
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_isbn_emits_checking_and_source_done_phases(library, monkeypatch):
+    class FakeMetadata:
+        SOURCE_NAMES = ("openlibrary", "googlebooks", "dnb", "bnf")
+
+        @staticmethod
+        def fetch_by_isbn(isbn, include_description=False, on_source_done=None):
+            for name in FakeMetadata.SOURCE_NAMES:
+                if on_source_done is not None:
+                    on_source_done(name, name != "bnf")  # every source hits except bnf
+            return make_book(title="Checked Book", isbn13=isbn)
+
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
+
+    events = []
+    result = library.lookup_isbn("9782222222222", on_status=lambda phase, data: events.append((phase, data)))
+
+    assert result is not None
+    assert result.title == "Checked Book"
+    assert events[0] == ("checking", {"sources": ["openlibrary", "googlebooks", "dnb", "bnf"]})
+    source_done_events = events[1:]
+    assert [data["source"] for _, data in source_done_events] == ["openlibrary", "googlebooks", "dnb", "bnf"]
+    assert [data["found"] for _, data in source_done_events] == [True, True, True, False]
+
+
+def test_lookup_isbn_emits_web_fallback_phase_when_metadata_misses(library, monkeypatch):
+    class FakeMetadata:
+        SOURCE_NAMES = ("openlibrary", "googlebooks", "dnb", "bnf")
+
+        @staticmethod
+        def fetch_by_isbn(isbn, include_description=False, on_source_done=None):
+            for name in FakeMetadata.SOURCE_NAMES:
+                if on_source_done is not None:
+                    on_source_done(name, False)
+            return None
+
+        @staticmethod
+        def search_by_title_author(title, author=""):
+            return []
+
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
+    library.web_fallback = FakeWebFallback(available=False)
+
+    events = []
+    result = library.lookup_isbn("9782222222222", on_status=lambda phase, data: events.append((phase, data)))
+
+    assert result is None
+    assert [phase for phase, _ in events][:1] == ["checking"]
+    assert ("web_fallback", {}) in events
+
+
+def test_lookup_isbn_broken_on_status_callback_does_not_break_lookup(library, monkeypatch):
+    class FakeMetadata:
+        SOURCE_NAMES = ("openlibrary", "googlebooks", "dnb", "bnf")
+
+        @staticmethod
+        def fetch_by_isbn(isbn, include_description=False, on_source_done=None):
+            if on_source_done is not None:
+                on_source_done("openlibrary", True)
+            return make_book(title="Still Works", isbn13=isbn)
+
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
+
+    def broken_on_status(phase, data):
+        raise RuntimeError("frontend socket blew up")
+
+    result = library.lookup_isbn("9782222222222", on_status=broken_on_status)
+    assert result is not None
+    assert result.title == "Still Works"
+
+
+def test_lookup_isbn_without_on_status_never_touches_source_names(library, monkeypatch):
+    """A FakeMetadata that doesn't define SOURCE_NAMES/on_source_done at all (matching every
+    plain fetch_by_isbn(isbn, include_description=...) double elsewhere in this file) must still
+    work when on_status is omitted -- lookup_isbn should never dereference metadata.SOURCE_NAMES
+    or pass on_source_done unless a caller actually asked for status updates."""
+
+    class FakeMetadata:
+        @staticmethod
+        def fetch_by_isbn(isbn, include_description=False):
+            return make_book(title="No Callback Needed", isbn13=isbn)
+
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
+    result = library.lookup_isbn("9782222222222")
+    assert result is not None
+    assert result.title == "No Callback Needed"
+
+
+# ---------------------------------------------------------------------------
 # add_by_isbn / lookup_isbn web-search fallback (last-resort step when
 # metadata.fetch_by_isbn misses every real catalog source)
 # ---------------------------------------------------------------------------

@@ -97,12 +97,27 @@ WebSocket messages (Socket.IO, via the WebUI Brick):
   server -> client, event "scan_event":
     {"ok": true, "code": "...", "device": "...", "book": {...}}   -- scanned + auto-saved
     {"ok": false, "code": "...", "device": "...", "reason": "not_found"} -- scanned, no metadata hit
+  server -> client, event "lookup_status" -- live progress for an in-flight POST /api/lookup/{isbn}
+  (see engine.library.Library.lookup_isbn's docstring for the phase sequence), broadcast rather
+  than targeted at one socket/session (this Brick's send_message() has no per-sid addressing,
+  same constraint scan_event already lives with -- see that event's own entry above). Every
+  payload carries the `isbn` the browser tab itself requested; app.js only reacts to a message
+  whose isbn matches the lookup that tab currently has in flight, ignoring the rest -- the same
+  broadcast-plus-client-side-filter shape scan_event already uses (there, filtering by `code`
+  in the recent-scans log; here, filtering by `isbn` against the one preview box a tab can have
+  open at a time):
+    {"isbn": "...", "phase": "checking", "sources": ["openlibrary", "googlebooks", "dnb", "bnf"]}
+    {"isbn": "...", "phase": "source_done", "source": "openlibrary", "found": true}
+    {"isbn": "...", "phase": "web_fallback"}
+  Purely a UI-transparency nicety: if Socket.IO never delivers these (no connection, an old
+  cached frontend, etc.) the REST response alone still resolves the lookup normally, and the
+  frontend's static "Looking up..." message never gets upgraded but never breaks either.
   Client and event "shelf_candidates" are NOT sent over the socket -- shelf-photo processing is a
   synchronous REST call (POST /api/shelf_photo) since it's user-initiated with a result the same
   tab is waiting on, unlike a scan which can land from a device no browser tab is looking at.
   No other WebSocket messages are defined in this app (unlike progq/conquest-q, there's no
   continuously-ticking simulation state to broadcast -- every view is REST-driven and only the
-  scan toast needs push).
+  scan toast and lookup-status updates need push).
 """
 
 from __future__ import annotations
@@ -252,7 +267,19 @@ def main():
         return payload
 
     def lookup_isbn(isbn: str):
-        book = library.lookup_isbn(isbn)
+        # on_status broadcasts live per-source progress over Socket.IO while the REST call is
+        # still in flight (see this module's docstring's "lookup_status" event) -- the eventual
+        # {"found": ...} REST response is the only thing a client strictly needs, so a broken or
+        # disconnected socket degrades to the frontend's static "Looking up..." fallback rather
+        # than affecting the lookup itself (send_message failures are swallowed the same way
+        # library.py's own on_status wrapper already swallows a broken callback).
+        def on_status(phase: str, data: dict) -> None:
+            try:
+                ui.send_message("lookup_status", {"isbn": isbn, "phase": phase, **data})
+            except Exception as exc:
+                print(f"[techaq] lookup_status send_message failed for phase {phase!r}: {exc!r}")
+
+        book = library.lookup_isbn(isbn, on_status=on_status)
         if book is None:
             return {"found": False}
         return {"found": True, "book": book_to_dict(book, include_cover_data_uri=True)}

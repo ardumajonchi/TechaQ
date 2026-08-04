@@ -261,6 +261,54 @@ button:disabled {
   color: var(--success);
 }
 
+/* -- ISBN lookup: live per-source checklist (app.js's renderLookupChecklist/applyLookupStatus)
+   -- Open Library/Google Books/DNB/BNF are queried concurrently, so every row starts "pending"
+   at once rather than lighting up in sequence; each flips to done/miss independently as its own
+   "lookup_status" event arrives over Socket.IO. Progressive enhancement over the plain .status
+   text this replaces -- if Socket.IO never delivers an event, that text is simply never upgraded
+   into this checklist, per the app's "a missing dependency degrades one feature, not the app"
+   rule (see README's "Running it" section). */
+
+.lookup-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.lookup-checklist li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-dim);
+}
+
+.lookup-check-icon {
+  display: inline-block;
+  width: 1.2em;
+  text-align: center;
+}
+
+.lookup-check-pending .lookup-check-icon {
+  animation: lookup-spin 1s linear infinite;
+}
+
+.lookup-check-done {
+  color: var(--success);
+}
+
+.lookup-check-miss {
+  color: var(--text-dim);
+}
+
+@keyframes lookup-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* -- manual entry form grid --------------------------------------------------------------- */
 
 .book-form .form-grid {

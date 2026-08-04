@@ -12,6 +12,13 @@ let shelfCandidates = []; // enriched candidates currently shown in the Shelf Ph
 let libraryViewMode = "grid"; // "grid" | "table" -- toggled in the Library view's search card
 let currentLibraryBooks = []; // last-loaded Library results, for CSV export
 let currentSettings = { fetch_synopsis_default: false, ui_language: "en", ui_theme: "dark" };
+// The ISBN string (exactly as sent to POST /api/lookup/{isbn}, unencoded) the "Look up" box is
+// currently waiting on -- "lookup_status" Socket.IO events are broadcast to every connected tab
+// (this Brick's send_message() has no per-sid targeting, same constraint scan_event already
+// lives with), so each tab filters to the one lookup it itself kicked off by comparing against
+// this, exactly like renderScanLogEntry filters scan_event by `code` rather than reacting to
+// every scan any tab triggered.
+let currentLookupIsbn = null;
 
 // -- small helpers --------------------------------------------------------------------------
 
@@ -135,6 +142,61 @@ function setupScanSocket() {
     renderScanLogEntry(payload);
     loadLocations(); // a newly-saved book's location values may be new autocomplete options
   });
+  socket.on("lookup_status", (payload) => {
+    if (payload.isbn !== currentLookupIsbn) return; // some other tab's in-flight lookup
+    applyLookupStatus(payload);
+  });
+}
+
+// -- live per-source lookup checklist ----------------------------------------------------------
+// metadata.fetch_by_isbn queries Open Library/Google Books/DNB/BNF CONCURRENTLY (see
+// python/engine/metadata.py's docstring), not one after another -- so rather than faking a
+// sequential "checking A... checking B..." message, this renders all four as in-flight at once
+// (spinner) the moment the lookup starts, then flips each to a checkmark/x as its own
+// "lookup_status" "source_done" event arrives, in whatever order they actually finish. If the
+// web-search fallback step is reached (a real last-resort catalog miss), the whole checklist
+// collapses into a single "Searching the web..." line, since that step genuinely is sequential.
+// Entirely a progressive enhancement over the static "Looking up..." text setupIsbnLookup already
+// puts in #isbn-lookup-result before this ever has a chance to render -- if Socket.IO doesn't
+// deliver these events at all (not connected, degraded per this app's "no feature ever breaks the
+// rest" philosophy), that static message just sits there unmodified until the REST response
+// lands.
+
+const _LOOKUP_SOURCE_LABEL_KEYS = {
+  openlibrary: "js.lookup.checking.openlibrary",
+  googlebooks: "js.lookup.checking.googlebooks",
+  dnb: "js.lookup.checking.dnb",
+  bnf: "js.lookup.checking.bnf",
+};
+
+function renderLookupChecklist(sources) {
+  const items = sources
+    .map(
+      (source) =>
+        `<li data-source="${source}" class="lookup-check-pending">
+          <span class="lookup-check-icon">⏳</span> ${t(_LOOKUP_SOURCE_LABEL_KEYS[source] || source)}
+        </li>`
+    )
+    .join("");
+  qs("#isbn-lookup-result").innerHTML = `<ul class="lookup-checklist">${items}</ul>`;
+}
+
+function applyLookupStatus(payload) {
+  const el = qs("#isbn-lookup-result");
+  if (payload.phase === "checking") {
+    renderLookupChecklist(payload.sources || []);
+    return;
+  }
+  if (payload.phase === "source_done") {
+    const item = qs(`.lookup-checklist li[data-source="${payload.source}"]`, el);
+    if (!item) return; // checklist already replaced (e.g. web_fallback, or the final result)
+    item.className = payload.found ? "lookup-check-done" : "lookup-check-miss";
+    qs(".lookup-check-icon", item).textContent = payload.found ? "✓" : "✗";
+    return;
+  }
+  if (payload.phase === "web_fallback") {
+    el.innerHTML = `<p class="status">${t("js.lookup.searchingWeb")}</p>`;
+  }
 }
 
 function renderIsbnLookupResult(data) {
@@ -184,11 +246,14 @@ function setupIsbnLookup() {
   qs("#isbn-lookup-btn").addEventListener("click", async () => {
     const isbn = qs("#isbn-lookup-input").value.trim();
     if (!isbn) return;
+    currentLookupIsbn = isbn;
     qs("#isbn-lookup-result").innerHTML = `<p class="status">${t("js.lookup.looking")}</p>`;
     try {
       const data = await apiSend("POST", `/api/lookup/${encodeURIComponent(isbn)}`, {});
+      if (isbn === currentLookupIsbn) currentLookupIsbn = null;
       renderIsbnLookupResult(data);
     } catch (exc) {
+      if (isbn === currentLookupIsbn) currentLookupIsbn = null;
       qs("#isbn-lookup-result").innerHTML = `<p class="status error">${t("js.lookup.failed")}</p>`;
     }
   });

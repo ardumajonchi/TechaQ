@@ -35,6 +35,7 @@ import base64
 import csv
 import io
 from dataclasses import asdict
+from typing import Callable
 
 from .db import BookDB
 from .models import BookRecord
@@ -204,16 +205,65 @@ class Library:
         book.id = book_id
         return book
 
-    def lookup_isbn(self, isbn: str) -> BookRecord | None:
-        """Look up only, never saves -- used by POST /api/lookup/{isbn} for a scan-preview UX."""
+    def lookup_isbn(
+        self,
+        isbn: str,
+        on_status: Callable[[str, dict], None] | None = None,
+    ) -> BookRecord | None:
+        """Look up only, never saves -- used by POST /api/lookup/{isbn} for a scan-preview UX.
+
+        `on_status`, if given, is called with (phase, data) at each step of the lookup so a
+        caller wired to a live UI (main.py's Socket.IO handler, see its module docstring's
+        "lookup_status" event) can show which source is currently being checked instead of one
+        static message for the whole call:
+          - ("checking", {"sources": [...]})       -- announced once, right before all four of
+                                                        metadata.fetch_by_isbn's catalog sources
+                                                        are dispatched (they run concurrently, not
+                                                        one-at-a-time -- see metadata.py's
+                                                        docstring -- so this reports every source
+                                                        as in-flight at once, not sequentially).
+          - ("source_done", {"source": ..., "found": bool})  -- once per source, in whatever
+                                                        order its thread actually finishes.
+          - ("web_fallback", {})                   -- only if every catalog source above missed
+                                                        and the web-search fallback step (a
+                                                        genuinely sequential scrape+LLM call) is
+                                                        reached.
+        Entirely optional and side-channel: omit it (the default) for a plain call with no status
+        reporting, exactly as every existing caller/test does. A broken callback is swallowed here
+        (never allowed to abort the lookup itself) -- this is UI transparency, not a lookup input.
+        """
         if metadata is None:
             return None
+
+        def emit(phase: str, data: dict) -> None:
+            if on_status is None:
+                return
+            try:
+                on_status(phase, data)
+            except Exception as exc:
+                print(f"[techaq] lookup_isbn on_status callback failed for phase {phase!r}: {exc!r}")
+
+        def on_source_done(source: str, found: bool) -> None:
+            emit("source_done", {"source": source, "found": found})
+
+        if on_status is not None:
+            emit("checking", {"sources": list(metadata.SOURCE_NAMES)})
+        fetch_kwargs = {"include_description": self.settings.get()["fetch_synopsis_default"]}
+        if on_status is not None:
+            # Only pass on_source_done when a caller actually wants it -- fetch_by_isbn's own
+            # signature treats the omitted kwarg and an explicit None the same, but some callers
+            # (notably tests exercising the pre-existing, callback-less code path) stub out
+            # fetch_by_isbn with a narrower signature that doesn't accept this kwarg at all, so
+            # passing it unconditionally (even as None) would raise TypeError for them.
+            fetch_kwargs["on_source_done"] = on_source_done
         try:
-            book = metadata.fetch_by_isbn(isbn, include_description=self.settings.get()["fetch_synopsis_default"])
+            book = metadata.fetch_by_isbn(isbn, **fetch_kwargs)
         except Exception as exc:
             print(f"[techaq] metadata.fetch_by_isbn({isbn!r}) failed: {exc!r}")
             book = None
         if book is None:
+            if on_status is not None:
+                emit("web_fallback", {})
             book = self._web_fallback_lookup(isbn)
         return book
 
