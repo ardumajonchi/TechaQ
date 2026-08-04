@@ -114,6 +114,10 @@ html, body {
 
 .tab-btn:hover {
   color: var(--accent-hover);
+  /* pin the background explicitly -- the generic button:hover rule below otherwise wins on
+     specificity and repaints it to --accent-hover, the same color this rule just set the text
+     to, making the label invisible against its own background. */
+  background: var(--panel-alt);
 }
 
 /* -- main content ------------------------------------------------------------------------ */
@@ -509,6 +513,12 @@ button:disabled {
   min-height: unset;
   font-size: 1rem;
   line-height: 1;
+}
+
+.view-toggle-btn:hover {
+  /* same fix as .tab-btn:hover above -- pin the background so the generic button:hover rule
+     doesn't override it and wash out the (unchanged) text color. */
+  background: var(--panel-alt);
 }
 
 .view-toggle-btn.active {
