@@ -11,6 +11,13 @@ Both public functions are network-call-testable: all HTTP access goes through pl
 `requests.get` directly. Neither function ever raises out to the caller -- any network/parsing
 failure is logged and treated as "no data from that source" (fetch_by_isbn only returns None if
 every source found nothing; search_by_title_author returns [] on any error).
+
+`fetch_by_isbn`'s optional `on_source_done` callback exists purely so a caller with a live UI
+(engine/library.py -> main.py's Socket.IO wiring -> app.js's lookup-status checklist) can report
+per-source progress as each of the four concurrent fetches actually completes, rather than
+faking a sequential "checking A... checking B..." that doesn't match how the ThreadPoolExecutor
+below really runs them. It's entirely optional and side-channel: the return value and merge
+logic are identical whether or not a callback is passed.
 """
 
 from __future__ import annotations
@@ -19,7 +26,8 @@ import logging
 import os
 import re
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable
 
 import requests
 
@@ -30,10 +38,18 @@ log = logging.getLogger(__name__)
 _TIMEOUT = 5
 _MIN_COVER_BYTES = 1024  # Open Library's "no cover" placeholder is a tiny real gif under ~1KB.
 
-_OPENLIBRARY_BOOKS_URL = "https://openlibrary.org/api/books"
+# The four catalog sources fetch_by_isbn dispatches concurrently, in the fixed precedence order
+# field-merging uses (see `merged()` below) -- exposed here so a caller that wants to announce
+# "now checking: Open Library, Google Books, DNB, BNF" (see engine/library.py's lookup_isbn) has
+# one place to get that list from, rather than hardcoding it a second time.
+SOURCE_NAMES = ("openlibrary", "googlebooks", "dnb", "bnf")
+
+_OPENLIBRARY_EDITION_URL = "https://openlibrary.org/isbn/{isbn}.json"
+_OPENLIBRARY_RESOURCE_URL = "https://openlibrary.org{key}.json"
 _OPENLIBRARY_COVER_URL = "https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg"
 _OPENLIBRARY_SEARCH_URL = "https://openlibrary.org/search.json"
 _OPENLIBRARY_COVER_BY_ID_URL = "https://covers.openlibrary.org/b/id/{cover_id}-M.jpg"
+_MAX_AUTHOR_LOOKUPS = 5  # cap per-author name resolution calls for anthologies/edited volumes.
 _GOOGLE_BOOKS_URL = "https://www.googleapis.com/books/v1/volumes"
 _DNB_SRU_URL = "https://services.dnb.de/sru/dnb"
 _BNF_SRU_URL = "https://catalogue.bnf.fr/api/SRU"
@@ -72,27 +88,73 @@ def _download_cover(url: str) -> tuple[bytes | None, str]:
     return data, content_type
 
 
+def _resolve_openlibrary_author_names(author_keys: list[str]) -> list[str]:
+    """Resolve up to `_MAX_AUTHOR_LOOKUPS` Open Library author `/authors/OL...A` keys to display
+    names via one GET per key. Skips (never raises for) any key that fails or has no name -- a
+    partial author list from this is still strictly better than the whole source contributing
+    nothing. Capped because a handful of edited anthologies/textbooks list dozens of contributors,
+    which would otherwise turn one ISBN lookup into dozens of sequential HTTP calls."""
+    names: list[str] = []
+    for key in author_keys[:_MAX_AUTHOR_LOOKUPS]:
+        try:
+            resp = requests.get(_OPENLIBRARY_RESOURCE_URL.format(key=key), timeout=_TIMEOUT)
+            resp.raise_for_status()
+            name = (resp.json() or {}).get("name", "")
+            if name:
+                names.append(name)
+        except requests.RequestException as exc:
+            log.warning("Open Library author lookup failed for %s: %s", key, exc)
+        except (ValueError, KeyError, TypeError) as exc:
+            log.warning("Open Library author parse failed for %s: %s", key, exc)
+    return names
+
+
 def _fetch_openlibrary(isbn: str) -> dict:
-    """Return a dict of fields found from Open Library, or {} on any failure. Never raises."""
+    """Return a dict of fields found from Open Library, or {} on any failure. Never raises.
+
+    Uses the single-edition REST endpoint (`/isbn/{isbn}.json`) rather than the older aggregate
+    `/api/books?...&jscmd=data` endpoint this used to call: as of 2026-08, the `/api/books`
+    endpoint (and `/search.json`, used by `search_by_title_author` below) is unreliable from at
+    least some network paths -- observed hanging to a curl timeout or returning HTTP 503 on the
+    large majority of requests regardless of how long the timeout is (tried up to 40s), while
+    `/isbn/{isbn}.json`, `/authors/{key}.json`, and `/works/{key}.json` consistently respond in
+    1-3 seconds. This is presumably Open Library rate-limiting or otherwise deprioritizing that
+    legacy aggregate endpoint server-side, not a client-side timeout problem, since no timeout
+    length made it reliable. The per-resource endpoints require an extra round trip to resolve
+    author names (and, best-effort, subjects) instead of getting them inline, which is the
+    tradeoff for actually getting a response."""
     out: dict = {}
     try:
-        resp = requests.get(
-            _OPENLIBRARY_BOOKS_URL,
-            params={"bibkeys": f"ISBN:{isbn}", "format": "json", "jscmd": "data"},
-            timeout=_TIMEOUT,
-        )
+        resp = requests.get(_OPENLIBRARY_EDITION_URL.format(isbn=isbn), timeout=_TIMEOUT)
         resp.raise_for_status()
-        payload = resp.json() or {}
-        data = payload.get(f"ISBN:{isbn}") or {}
-        if data:
-            out["title"] = data.get("title", "")
-            out["subtitle"] = data.get("subtitle", "")
-            out["authors"] = [a.get("name", "") for a in data.get("authors", []) if a.get("name")]
-            publishers = data.get("publishers") or []
-            out["publisher"] = publishers[0].get("name", "") if publishers else ""
-            out["published_date"] = data.get("publish_date", "")
-            out["page_count"] = data.get("number_of_pages")
-            out["categories"] = [s.get("name", "") for s in data.get("subjects", []) if s.get("name")]
+        data = resp.json() or {}
+        out["title"] = data.get("title", "")
+        out["subtitle"] = data.get("subtitle", "")
+        publishers = data.get("publishers") or []
+        out["publisher"] = publishers[0] if publishers else ""
+        out["published_date"] = data.get("publish_date", "")
+        out["page_count"] = data.get("number_of_pages")
+
+        author_keys = [a.get("key", "") for a in data.get("authors", []) or [] if a.get("key")]
+        if author_keys:
+            names = _resolve_openlibrary_author_names(author_keys)
+            if names:
+                out["authors"] = names
+
+        work_keys = [w.get("key", "") for w in data.get("works", []) or [] if w.get("key")]
+        if work_keys:
+            try:
+                work_resp = requests.get(
+                    _OPENLIBRARY_RESOURCE_URL.format(key=work_keys[0]), timeout=_TIMEOUT
+                )
+                work_resp.raise_for_status()
+                subjects = (work_resp.json() or {}).get("subjects") or []
+                if subjects:
+                    out["categories"] = [s for s in subjects if isinstance(s, str)]
+            except requests.RequestException as exc:
+                log.warning("Open Library work lookup failed for isbn %s: %s", isbn, exc)
+            except (ValueError, KeyError, TypeError) as exc:
+                log.warning("Open Library work parse failed for isbn %s: %s", isbn, exc)
     except requests.RequestException as exc:
         log.warning("Open Library metadata lookup failed for isbn %s: %s", isbn, exc)
     except (ValueError, KeyError, TypeError) as exc:
@@ -252,7 +314,11 @@ def _richer(a, b):
     return a or b
 
 
-def fetch_by_isbn(isbn: str, include_description: bool = False) -> BookRecord | None:
+def fetch_by_isbn(
+    isbn: str,
+    include_description: bool = False,
+    on_source_done: Callable[[str, bool], None] | None = None,
+) -> BookRecord | None:
     """Look up a book by ISBN-10/ISBN-13/raw EAN-13 barcode, querying Open Library, Google Books,
     DNB, and BNF concurrently and merging their results into one BookRecord. Returns None only if
     every source found nothing.
@@ -260,21 +326,43 @@ def fetch_by_isbn(isbn: str, include_description: bool = False) -> BookRecord | 
     `include_description` defaults to False (skip fetching the synopsis) so a scan/save doesn't
     pay for Google Books' description text on the default path -- every other field still merges
     normally from whichever sources hit, so this doesn't reduce lookup coverage, only the
-    synopsis. Pass True (or use `fetch_description` directly) to include it."""
+    synopsis. Pass True (or use `fetch_description` directly) to include it.
+
+    `on_source_done`, if given, is called once per source (name from SOURCE_NAMES, hit: bool) the
+    moment that source's own thread finishes -- in whatever order they actually complete, since
+    all four fire at once rather than sequentially. This exists so a caller with a UI to update
+    (see engine/library.py's lookup_isbn -> main.py's Socket.IO wiring) can report live per-source
+    progress instead of one static "looking up" message for the whole call. It is never required:
+    omit it (the default) for a plain blocking call, exactly as every existing caller/test does.
+    Exceptions raised by the callback itself propagate out of `.result()` on the *next* future
+    processed by as_completed() below, which would incorrectly abort the whole lookup for what's
+    just a UI-side bug -- so the callback is wrapped in its own try/except here, never the
+    fetch functions' own results."""
     clean = _clean_isbn(isbn)
     if not clean:
         return None
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        ol_future = pool.submit(_fetch_openlibrary, clean)
-        gb_future = pool.submit(_fetch_googlebooks, clean)
-        dnb_future = pool.submit(_fetch_dnb, clean)
-        bnf_future = pool.submit(_fetch_bnf, clean)
-        ol = ol_future.result()
-        gb = gb_future.result()
-        dnb = dnb_future.result()
-        bnf = bnf_future.result()
+    fetchers = {
+        "openlibrary": _fetch_openlibrary,
+        "googlebooks": _fetch_googlebooks,
+        "dnb": _fetch_dnb,
+        "bnf": _fetch_bnf,
+    }
 
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        future_to_name = {pool.submit(fn, clean): name for name, fn in fetchers.items()}
+        by_name: dict[str, dict] = {}
+        for future in as_completed(future_to_name):
+            name = future_to_name[future]
+            data = future.result()
+            by_name[name] = data
+            if on_source_done is not None:
+                try:
+                    on_source_done(name, bool(data))
+                except Exception as exc:
+                    log.warning("on_source_done callback failed for source %s: %s", name, exc)
+
+    ol, gb, dnb, bnf = (by_name[name] for name in SOURCE_NAMES)
     results = [("openlibrary", ol), ("googlebooks", gb), ("dnb", dnb), ("bnf", bnf)]
     sources = [name for name, data in results if data]
     if not sources:

@@ -33,22 +33,32 @@ class FakeResponse:
             raise requests.exceptions.HTTPError(f"HTTP {self.status_code}")
 
 
-def _openlibrary_books_response(isbn, title="Dune", authors=("Frank Herbert",), publisher="Ace",
-                                 published_date="1965", page_count=412, subjects=("Sci-Fi",),
-                                 subtitle=""):
+def _openlibrary_edition_response(title="Dune", author_keys=("/authors/OL79034A",), publisher="Ace",
+                                   published_date="1965", page_count=412, subtitle="",
+                                   work_keys=("/works/OL893414W",)):
+    """A minimal-but-realistic `/isbn/{isbn}.json` single-edition response. Authors/subjects are
+    NOT inline here (unlike the old `/api/books?jscmd=data` shape) -- `_fetch_openlibrary` resolves
+    author names via a follow-up `/authors/{key}.json` GET per key, and subjects via a follow-up
+    `/works/{key}.json` GET on the first work key, matching what the real endpoint returns."""
     return FakeResponse(
         json_data={
-            f"ISBN:{isbn}": {
-                "title": title,
-                "subtitle": subtitle,
-                "authors": [{"name": a} for a in authors],
-                "publishers": [{"name": publisher}] if publisher else [],
-                "publish_date": published_date,
-                "number_of_pages": page_count,
-                "subjects": [{"name": s} for s in subjects],
-            }
+            "title": title,
+            "subtitle": subtitle,
+            "authors": [{"key": k} for k in author_keys],
+            "publishers": [publisher] if publisher else [],
+            "publish_date": published_date,
+            "number_of_pages": page_count,
+            "works": [{"key": k} for k in work_keys],
         }
     )
+
+
+def _openlibrary_author_response(name):
+    return FakeResponse(json_data={"name": name})
+
+
+def _openlibrary_work_response(subjects=("Sci-Fi",)):
+    return FakeResponse(json_data={"subjects": list(subjects)})
 
 
 def _googlebooks_response(title="Dune", authors=("Frank Herbert",), publisher="Ace Books",
@@ -148,7 +158,9 @@ def _dispatch(mapping, default_empty_sru=True):
 def test_fetch_by_isbn_merges_both_sources(monkeypatch):
     isbn = "9780441172719"
     mapping = {
-        metadata._OPENLIBRARY_BOOKS_URL: _openlibrary_books_response(isbn, publisher="Ace"),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): _openlibrary_edition_response(publisher="Ace"),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/authors/OL79034A"): _openlibrary_author_response("Frank Herbert"),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"): _openlibrary_work_response(),
         metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn): _cover_response(),
         metadata._GOOGLE_BOOKS_URL: _googlebooks_response(publisher="Ace Books"),
     }
@@ -170,10 +182,12 @@ def test_fetch_by_isbn_merges_both_sources(monkeypatch):
 def test_fetch_by_isbn_richer_value_wins_for_description_and_authors(monkeypatch):
     isbn = "9780441172719"
     # Both sources provide authors; Google has more of them, so it should win.
-    ol_resp = _openlibrary_books_response(isbn, authors=("Frank Herbert",))
+    ol_resp = _openlibrary_edition_response(author_keys=("/authors/OL79034A",))
     gb_resp = _googlebooks_response(authors=("Frank Herbert", "Brian Herbert"), thumbnail="")
     mapping = {
-        metadata._OPENLIBRARY_BOOKS_URL: ol_resp,
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): ol_resp,
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/authors/OL79034A"): _openlibrary_author_response("Frank Herbert"),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"): _openlibrary_work_response(),
         metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn): _no_cover_response(),
         metadata._GOOGLE_BOOKS_URL: gb_resp,
     }
@@ -189,7 +203,9 @@ def test_fetch_by_isbn_richer_value_wins_for_description_and_authors(monkeypatch
 def test_fetch_by_isbn_openlibrary_only(monkeypatch):
     isbn = "9780441172719"
     mapping = {
-        metadata._OPENLIBRARY_BOOKS_URL: _openlibrary_books_response(isbn),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): _openlibrary_edition_response(),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/authors/OL79034A"): _openlibrary_author_response("Frank Herbert"),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"): _openlibrary_work_response(),
         metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn): _cover_response(),
         metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
     }
@@ -206,7 +222,7 @@ def test_fetch_by_isbn_openlibrary_only(monkeypatch):
 def test_fetch_by_isbn_googlebooks_only(monkeypatch):
     isbn = "9780441172719"
     mapping = {
-        metadata._OPENLIBRARY_BOOKS_URL: FakeResponse(status_code=200, json_data={}),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): FakeResponse(status_code=404),
         metadata._GOOGLE_BOOKS_URL: _googlebooks_response(thumbnail="https://books.google.com/thumb.jpg"),
         "https://books.google.com/thumb.jpg": _cover_response(size=2000, content_type="image/png"),
     }
@@ -225,7 +241,7 @@ def test_fetch_by_isbn_googlebooks_only(monkeypatch):
 def test_fetch_by_isbn_all_sources_empty_returns_none(monkeypatch):
     isbn = "0000000000000"
     mapping = {
-        metadata._OPENLIBRARY_BOOKS_URL: FakeResponse(status_code=200, json_data={}),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): FakeResponse(status_code=404),
         metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
     }
     monkeypatch.setattr(requests, "get", _dispatch(mapping))
@@ -233,10 +249,13 @@ def test_fetch_by_isbn_all_sources_empty_returns_none(monkeypatch):
     assert metadata.fetch_by_isbn(isbn) is None
 
 
+
 def test_fetch_by_isbn_google_429_handled_gracefully(monkeypatch):
     isbn = "9780441172719"
     mapping = {
-        metadata._OPENLIBRARY_BOOKS_URL: _openlibrary_books_response(isbn),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): _openlibrary_edition_response(),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/authors/OL79034A"): _openlibrary_author_response("Frank Herbert"),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"): _openlibrary_work_response(),
         metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn): _no_cover_response(),
         metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=429, json_data={"error": "rate limited"}),
     }
@@ -255,8 +274,12 @@ def test_fetch_by_isbn_googlebooks_connection_error_does_not_raise(monkeypatch):
     def fake_get(url, **kwargs):
         if url.startswith(metadata._GOOGLE_BOOKS_URL):
             raise requests.exceptions.ConnectionError("boom")
-        if url.startswith(metadata._OPENLIBRARY_BOOKS_URL):
-            return _openlibrary_books_response(isbn)
+        if url == metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn):
+            return _openlibrary_edition_response()
+        if url == metadata._OPENLIBRARY_RESOURCE_URL.format(key="/authors/OL79034A"):
+            return _openlibrary_author_response("Frank Herbert")
+        if url == metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"):
+            return _openlibrary_work_response()
         if url.startswith(metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn)):
             return _no_cover_response()
         if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
@@ -275,7 +298,7 @@ def test_fetch_by_isbn_openlibrary_error_does_not_kill_googlebooks_data(monkeypa
     isbn = "9780441172719"
 
     def fake_get(url, **kwargs):
-        if url.startswith(metadata._OPENLIBRARY_BOOKS_URL):
+        if url == metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn):
             raise requests.exceptions.Timeout("slow")
         if url.startswith(metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn)):
             raise requests.exceptions.Timeout("slow")
@@ -299,9 +322,12 @@ def test_fetch_by_isbn_strips_non_digits_from_raw_barcode(monkeypatch):
     clean = "9780441172719"
 
     def fake_get(url, **kwargs):
-        if url.startswith(metadata._OPENLIBRARY_BOOKS_URL):
-            assert kwargs["params"]["bibkeys"] == f"ISBN:{clean}"
-            return _openlibrary_books_response(clean)
+        if url == metadata._OPENLIBRARY_EDITION_URL.format(isbn=clean):
+            return _openlibrary_edition_response()
+        if url == metadata._OPENLIBRARY_RESOURCE_URL.format(key="/authors/OL79034A"):
+            return _openlibrary_author_response("Frank Herbert")
+        if url == metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"):
+            return _openlibrary_work_response()
         if url.startswith(metadata._OPENLIBRARY_COVER_URL.format(isbn=clean)):
             return _no_cover_response()
         if url.startswith(metadata._GOOGLE_BOOKS_URL):
@@ -333,8 +359,8 @@ def test_fetch_by_isbn_uses_env_api_key(monkeypatch):
     monkeypatch.setenv("GOOGLE_BOOKS_API_KEY", "secret-key")
 
     def fake_get(url, **kwargs):
-        if url.startswith(metadata._OPENLIBRARY_BOOKS_URL):
-            return FakeResponse(status_code=200, json_data={})
+        if url == metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn):
+            return FakeResponse(status_code=404)
         if url.startswith(metadata._GOOGLE_BOOKS_URL):
             assert kwargs["params"]["key"] == "secret-key"
             return _googlebooks_response(thumbnail="")
@@ -353,7 +379,7 @@ def test_fetch_by_isbn_include_description_false_still_merges_other_fields(monke
     only the synopsis text is withheld."""
     isbn = "9780441172719"
     mapping = {
-        metadata._OPENLIBRARY_BOOKS_URL: FakeResponse(status_code=200, json_data={}),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): FakeResponse(status_code=404),
         metadata._GOOGLE_BOOKS_URL: _googlebooks_response(thumbnail=""),
     }
     monkeypatch.setattr(requests, "get", _dispatch(mapping))
@@ -370,7 +396,7 @@ def test_fetch_by_isbn_include_description_false_still_merges_other_fields(monke
 def test_fetch_by_isbn_dnb_contributes_when_others_empty(monkeypatch):
     isbn = "9783827319333"
     mapping = {
-        metadata._OPENLIBRARY_BOOKS_URL: FakeResponse(status_code=200, json_data={}),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): FakeResponse(status_code=404),
         metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
         metadata._DNB_SRU_URL: _sru_dc_response(
             title="Effektiv Java programmieren",
@@ -395,7 +421,7 @@ def test_fetch_by_isbn_dnb_contributes_when_others_empty(monkeypatch):
 def test_fetch_by_isbn_bnf_contributes_and_cleans_creator_name(monkeypatch):
     isbn = "9782070360024"
     mapping = {
-        metadata._OPENLIBRARY_BOOKS_URL: FakeResponse(status_code=200, json_data={}),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): FakeResponse(status_code=404),
         metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
         metadata._DNB_SRU_URL: _empty_sru_response(),
         metadata._BNF_SRU_URL: _sru_dc_response(
@@ -420,8 +446,12 @@ def test_fetch_by_isbn_dnb_and_bnf_error_does_not_kill_other_sources(monkeypatch
     def fake_get(url, **kwargs):
         if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
             raise requests.exceptions.ConnectionError("boom")
-        if url.startswith(metadata._OPENLIBRARY_BOOKS_URL):
-            return _openlibrary_books_response(isbn)
+        if url == metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn):
+            return _openlibrary_edition_response()
+        if url == metadata._OPENLIBRARY_RESOURCE_URL.format(key="/authors/OL79034A"):
+            return _openlibrary_author_response("Frank Herbert")
+        if url == metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"):
+            return _openlibrary_work_response()
         if url.startswith(metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn)):
             return _no_cover_response()
         if url.startswith(metadata._GOOGLE_BOOKS_URL):
@@ -434,6 +464,67 @@ def test_fetch_by_isbn_dnb_and_bnf_error_does_not_kill_other_sources(monkeypatch
 
     assert record is not None
     assert record.source == "openlibrary"
+
+
+def test_fetch_openlibrary_caps_author_lookups(monkeypatch):
+    """An edition listing more than `_MAX_AUTHOR_LOOKUPS` authors (e.g. a big edited anthology)
+    should only trigger that many follow-up /authors/{key}.json GETs, not one per author -- this
+    caps how many sequential round trips one ISBN lookup can cost."""
+    isbn = "9780441172719"
+    author_keys = [f"/authors/OL{i}A" for i in range(8)]
+    calls = {"authors": 0}
+
+    def fake_get(url, **kwargs):
+        if url == metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn):
+            return _openlibrary_edition_response(author_keys=author_keys, work_keys=())
+        if url.startswith("https://openlibrary.org/authors/"):
+            calls["authors"] += 1
+            return _openlibrary_author_response(f"Author {url}")
+        if url.startswith(metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn)):
+            return _no_cover_response()
+        if url.startswith(metadata._GOOGLE_BOOKS_URL):
+            return FakeResponse(status_code=200, json_data={"items": []})
+        if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
+            return _empty_sru_response()
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    record = metadata.fetch_by_isbn(isbn)
+
+    assert record is not None
+    assert calls["authors"] == metadata._MAX_AUTHOR_LOOKUPS
+    assert len(record.authors) == metadata._MAX_AUTHOR_LOOKUPS
+
+
+def test_fetch_openlibrary_work_lookup_failure_does_not_lose_other_fields(monkeypatch):
+    """If the follow-up /works/{key}.json call (used only for best-effort subjects/categories)
+    fails, the rest of the Open Library edition data must still come through."""
+    isbn = "9780441172719"
+
+    def fake_get(url, **kwargs):
+        if url == metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn):
+            return _openlibrary_edition_response()
+        if url == metadata._OPENLIBRARY_RESOURCE_URL.format(key="/authors/OL79034A"):
+            return _openlibrary_author_response("Frank Herbert")
+        if url == metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"):
+            raise requests.exceptions.Timeout("slow")
+        if url.startswith(metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn)):
+            return _no_cover_response()
+        if url.startswith(metadata._GOOGLE_BOOKS_URL):
+            return FakeResponse(status_code=200, json_data={"items": []})
+        if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
+            return _empty_sru_response()
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    record = metadata.fetch_by_isbn(isbn)
+
+    assert record is not None
+    assert record.title == "Dune"
+    assert record.authors == ["Frank Herbert"]
+    assert record.categories == []
 
 
 def test_fetch_sru_dc_malformed_xml_returns_empty(monkeypatch):
