@@ -167,6 +167,8 @@ const _LOOKUP_SOURCE_LABEL_KEYS = {
   googlebooks: "js.lookup.checking.googlebooks",
   dnb: "js.lookup.checking.dnb",
   bnf: "js.lookup.checking.bnf",
+  opacsbn: "js.lookup.checking.opacsbn",
+  isbnsearch: "js.lookup.checking.isbnsearch",
 };
 
 function renderLookupChecklist(sources) {

@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 """Metadata lookup: fetch a BookRecord for a scanned/typed ISBN by querying Open Library, Google
-Books, and the German (DNB) and French (BNF) national library SRU catalogs concurrently and
-merging their results, or search by title/author for the AI describe-to-find feature and OCR
-candidate resolution.
+Books, the German (DNB) and French (BNF) national library SRU catalogs, Italy's national union
+catalog (OPAC SBN), and isbnsearch.org concurrently and merging their results, or search by
+title/author for the AI describe-to-find feature and OCR candidate resolution.
 
 Both public functions are network-call-testable: all HTTP access goes through plain
 `requests.get(url, timeout=...)` calls (no session objects) so tests can monkeypatch/mock
@@ -14,11 +14,12 @@ every source found nothing; search_by_title_author returns [] on any error).
 
 `fetch_by_isbn`'s optional `on_source_done` callback exists purely so a caller with a live UI
 (engine/library.py -> main.py's Socket.IO wiring -> app.js's lookup-status checklist) can report
-per-source progress as each of the four concurrent fetches actually completes, rather than
+per-source progress as each of the six concurrent fetches actually completes, rather than
 faking a sequential "checking A... checking B..." that doesn't match how the ThreadPoolExecutor
 below really runs them. It's entirely optional and side-channel: the return value and merge
 logic are identical whether or not a callback is passed.
 """
+
 
 from __future__ import annotations
 
@@ -38,11 +39,11 @@ log = logging.getLogger(__name__)
 _TIMEOUT = 5
 _MIN_COVER_BYTES = 1024  # Open Library's "no cover" placeholder is a tiny real gif under ~1KB.
 
-# The four catalog sources fetch_by_isbn dispatches concurrently, in the fixed precedence order
+# The six catalog sources fetch_by_isbn dispatches concurrently, in the fixed precedence order
 # field-merging uses (see `merged()` below) -- exposed here so a caller that wants to announce
-# "now checking: Open Library, Google Books, DNB, BNF" (see engine/library.py's lookup_isbn) has
-# one place to get that list from, rather than hardcoding it a second time.
-SOURCE_NAMES = ("openlibrary", "googlebooks", "dnb", "bnf")
+# "now checking: Open Library, Google Books, DNB, BNF, ..." (see engine/library.py's lookup_isbn)
+# has one place to get that list from, rather than hardcoding it a second time.
+SOURCE_NAMES = ("openlibrary", "googlebooks", "dnb", "bnf", "opacsbn", "isbnsearch")
 
 _OPENLIBRARY_EDITION_URL = "https://openlibrary.org/isbn/{isbn}.json"
 _OPENLIBRARY_RESOURCE_URL = "https://openlibrary.org{key}.json"
@@ -53,6 +54,15 @@ _MAX_AUTHOR_LOOKUPS = 5  # cap per-author name resolution calls for anthologies/
 _GOOGLE_BOOKS_URL = "https://www.googleapis.com/books/v1/volumes"
 _DNB_SRU_URL = "https://services.dnb.de/sru/dnb"
 _BNF_SRU_URL = "https://catalogue.bnf.fr/api/SRU"
+_OPAC_SBN_URL = "https://opac.sbn.it/o/opac-api/titles-search-post"
+_ISBNSEARCH_URL = "https://isbnsearch.org/isbn/{isbn}"
+# A plain requests.get default User-Agent gets bot-checked/blocked far more often on some sites
+# than a browser-shaped one -- shared by isbnsearch.org (below) since a 2026-08 investigation
+# found it responds identically either way, but there's no reason to find out the hard way later.
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 
 # Role/relator annotations that national-library catalogs append to creator names, e.g.
 # "Bloch, Joshua [Verfasser]" (DNB) or "Camus, Albert (1913-1960). Auteur du texte" (BNF).
@@ -300,6 +310,119 @@ def _fetch_bnf(isbn: str) -> dict:
     return _fetch_sru_dc(_BNF_SRU_URL, f'bib.fuzzyIsbn all "{isbn}"', isbn, "BNF")
 
 
+def _fetch_opacsbn(isbn: str) -> dict:
+    """Return a dict of fields found from OPAC SBN, Italy's national union catalog (run by ICCU),
+    or {} on any failure/no-hit. Never raises.
+
+    There's no documented/stable public API for this catalog (no SRU/Z39.50 endpoint is exposed),
+    but its own web search UI's AJAX backend is a plain, unauthenticated JSON endpoint that works
+    fine called directly -- confirmed live (2026-08) to be correctly ISBN-scoped (a bogus ISBN
+    reliably returns zero results) and fast/consistent (~0.3s across repeated calls). Must be
+    POSTed (as its own frontend does); a GET with the same params returns a plain HTTP 405. Added
+    specifically because DNB/BNF/Open Library/Google Books have essentially no coverage of
+    Italian-published books, and this is Italy's own equivalent national catalog. Treated as
+    best-effort since it's a scraped frontend contract, not a published API -- it could change
+    behavior on ICCU's end without notice."""
+    out: dict = {}
+    try:
+        resp = requests.post(
+            _OPAC_SBN_URL,
+            data={
+                "core": "sbn",
+                "fieldaccess[0]": "ISBN:7",
+                "fieldvalue[0]": isbn,
+                "fieldstruct[0]": "ricerca.frase:4=1",
+            },
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        payload = resp.json() or {}
+        results = ((payload.get("data") or {}).get("results")) or []
+        if not results:
+            return out
+        first = results[0]
+        title_block = first.get("title") or {}
+        # "info" is the full "Title / Author" citation string (e.g. "In ogni caso nessun rimorso
+        # / Pino Cacucci"); "text" alone is just the creator's "Last, First" heading.
+        info = title_block.get("info", "")
+        title, _, creator_tail = info.partition(" / ")
+        if title:
+            out["title"] = title.strip()
+        creator = creator_tail.strip() or title_block.get("text", "")
+        if creator:
+            out["authors"] = [_clean_creator_name(creator)]
+        # "infos" is a list of free-text citation lines, typically "Place : Publisher, Year" first.
+        infos = first.get("infos") or []
+        if infos:
+            place_publisher_year = infos[0]
+            _, _, tail = place_publisher_year.partition(":")
+            publisher, _, year = (tail or place_publisher_year).partition(",")
+            if publisher.strip():
+                out["publisher"] = publisher.strip()
+            year_match = re.search(r"\d{4}", year or place_publisher_year)
+            if year_match:
+                out["published_date"] = year_match.group(0)
+    except requests.RequestException as exc:
+        log.warning("OPAC SBN lookup failed for isbn %s: %s", isbn, exc)
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        log.warning("OPAC SBN parse failed for isbn %s: %s", isbn, exc)
+    return out
+
+
+def _fetch_isbnsearch(isbn: str) -> dict:
+    """Return a dict of fields scraped from isbnsearch.org's per-ISBN page, or {} on any
+    failure/no-hit (including its plain HTTP 404 for an ISBN it doesn't have). Never raises.
+
+    isbnsearch.org sources its data from ISBNdb, a third-party aggregator -- confirmed live
+    (2026-08) to reliably have clean, consistently-templated HTML for at least one Italian ISBN
+    that none of the other five sources here could find. It also intermittently serves a
+    reCAPTCHA bot-check page (still HTTP 200) instead of the real page for a given request/IP --
+    detected by the absence of the "ISBN-13:" field every real page has, and treated exactly like
+    a miss rather than risking a false title match. Treated as a secondary/tertiary source (its
+    own data completeness/licensing for any given ISBN is unknown), not a replacement for the
+    library-catalog sources above."""
+    out: dict = {}
+    try:
+        resp = requests.get(
+            _ISBNSEARCH_URL.format(isbn=isbn),
+            headers={"User-Agent": _BROWSER_USER_AGENT},
+            timeout=_TIMEOUT,
+        )
+        if resp.status_code == 404:
+            return out
+        resp.raise_for_status()
+        html = resp.text
+    except requests.RequestException as exc:
+        log.warning("isbnsearch.org lookup failed for isbn %s: %s", isbn, exc)
+        return out
+
+    # A real book page always has an "ISBN-13:" field; isbnsearch.org sometimes serves a
+    # reCAPTCHA bot-check page instead (same 200 status, "Please Verify to Continue" <h1>) --
+    # treat that exactly like a miss rather than parsing its <h1> as a real title.
+    if "ISBN-13:" not in html:
+        return out
+
+    def field(label: str) -> str:
+        m = re.search(rf"<strong>{label}:</strong>\s*(.*?)</p>", html, re.IGNORECASE | re.DOTALL)
+        return re.sub(r"<[^>]+>", "", m.group(1)).strip() if m else ""
+
+    title_match = re.search(r"<h1>(.*?)</h1>", html, re.IGNORECASE | re.DOTALL)
+    title = re.sub(r"<[^>]+>", "", title_match.group(1)).strip() if title_match else ""
+    if not title:
+        return out
+    out["title"] = title
+    author = field("Author")
+    if author:
+        out["authors"] = [author]
+    publisher = field("Publisher")
+    if publisher:
+        out["publisher"] = publisher
+    published_date = field("Published")
+    if published_date:
+        out["published_date"] = published_date
+    return out
+
+
 def _richer(a, b):
     """Pick the "richer" of two values of the same field when both sources have one: longer
     string, or the list with more entries. Falls back to whichever is truthy."""
@@ -347,9 +470,11 @@ def fetch_by_isbn(
         "googlebooks": _fetch_googlebooks,
         "dnb": _fetch_dnb,
         "bnf": _fetch_bnf,
+        "opacsbn": _fetch_opacsbn,
+        "isbnsearch": _fetch_isbnsearch,
     }
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=len(fetchers)) as pool:
         future_to_name = {pool.submit(fn, clean): name for name, fn in fetchers.items()}
         by_name: dict[str, dict] = {}
         for future in as_completed(future_to_name):
@@ -362,8 +487,15 @@ def fetch_by_isbn(
                 except Exception as exc:
                     log.warning("on_source_done callback failed for source %s: %s", name, exc)
 
-    ol, gb, dnb, bnf = (by_name[name] for name in SOURCE_NAMES)
-    results = [("openlibrary", ol), ("googlebooks", gb), ("dnb", dnb), ("bnf", bnf)]
+    ol, gb, dnb, bnf, opacsbn, isbnsearch = (by_name[name] for name in SOURCE_NAMES)
+    results = [
+        ("openlibrary", ol),
+        ("googlebooks", gb),
+        ("dnb", dnb),
+        ("bnf", bnf),
+        ("opacsbn", opacsbn),
+        ("isbnsearch", isbnsearch),
+    ]
     sources = [name for name, data in results if data]
     if not sources:
         return None

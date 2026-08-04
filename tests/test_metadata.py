@@ -28,6 +28,10 @@ class FakeResponse:
             raise ValueError("no json body")
         return self._json_data
 
+    @property
+    def text(self):
+        return self.content.decode("utf-8") if isinstance(self.content, bytes) else self.content
+
     def raise_for_status(self):
         if self.status_code >= 400:
             raise requests.exceptions.HTTPError(f"HTTP {self.status_code}")
@@ -134,10 +138,60 @@ def _empty_sru_response():
     return _sru_dc_response()
 
 
+def _opacsbn_response(title="", creator="", place_publisher_year=""):
+    """A minimal-but-realistic OPAC SBN titles-search-post JSON response with one result, or a
+    zero-result response if title is empty."""
+    if not title:
+        return FakeResponse(status_code=200, json_data={"status": "success", "data": {"total": 0, "results": []}})
+    info = f"{title} / {creator}" if creator else title
+    return FakeResponse(
+        status_code=200,
+        json_data={
+            "status": "success",
+            "data": {
+                "total": 1,
+                "results": [
+                    {
+                        "title": {"text": creator, "info": info},
+                        "infos": [place_publisher_year] if place_publisher_year else [],
+                    }
+                ],
+            },
+        },
+    )
+
+
+def _empty_opacsbn_response():
+    return _opacsbn_response()
+
+
+def _isbnsearch_response(title="", author="", publisher="", published_date="", isbn13="9788807881114"):
+    """A minimal-but-realistic isbnsearch.org per-ISBN page, or a bare 404 if title is empty."""
+    if not title:
+        return FakeResponse(status_code=404)
+    fields = f"<h1>{title}</h1><p><strong>ISBN-13:</strong> {isbn13}</p>"
+    if author:
+        fields += f"<p><strong>Author:</strong> {author}</p>"
+    if publisher:
+        fields += f"<p><strong>Publisher:</strong> {publisher}</p>"
+    if published_date:
+        fields += f"<p><strong>Published:</strong> {published_date}</p>"
+    return FakeResponse(status_code=200, content=fields.encode("utf-8"))
+
+
+def _isbnsearch_botcheck_response():
+    """isbnsearch.org's reCAPTCHA bot-check page -- HTTP 200, but no "ISBN-13:" field."""
+    return FakeResponse(status_code=200, content=b"<h1>Please Verify to Continue</h1>")
+
+
+def _empty_isbnsearch_response():
+    return _isbnsearch_response()
+
+
 def _dispatch(mapping, default_empty_sru=True):
     """Build a fake requests.get(url, **kwargs) that looks up a canned response by URL prefix.
-    DNB/BNF default to an empty (zero-record) SRU response unless explicitly overridden in
-    `mapping`, so existing tests don't need to know about every source."""
+    DNB/BNF/OPAC SBN/isbnsearch.org default to an empty/no-hit response unless explicitly
+    overridden in `mapping`, so existing tests don't need to know about every source."""
 
     def fake_get(url, **kwargs):
         for prefix, response in mapping.items():
@@ -145,6 +199,10 @@ def _dispatch(mapping, default_empty_sru=True):
                 return response(**kwargs) if callable(response) and not isinstance(response, FakeResponse) else response
         if default_empty_sru and url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
             return _empty_sru_response()
+        if default_empty_sru and url == metadata._OPAC_SBN_URL:
+            return _empty_opacsbn_response()
+        if default_empty_sru and url.startswith("https://isbnsearch.org/isbn/"):
+            return _empty_isbnsearch_response()
         raise AssertionError(f"unexpected URL requested: {url}")
 
     return fake_get
@@ -165,6 +223,7 @@ def test_fetch_by_isbn_merges_both_sources(monkeypatch):
         metadata._GOOGLE_BOOKS_URL: _googlebooks_response(publisher="Ace Books"),
     }
     monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
 
     record = metadata.fetch_by_isbn(isbn, include_description=True)
 
@@ -192,6 +251,7 @@ def test_fetch_by_isbn_richer_value_wins_for_description_and_authors(monkeypatch
         metadata._GOOGLE_BOOKS_URL: gb_resp,
     }
     monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
 
     record = metadata.fetch_by_isbn(isbn)
 
@@ -210,6 +270,7 @@ def test_fetch_by_isbn_openlibrary_only(monkeypatch):
         metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
     }
     monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
 
     record = metadata.fetch_by_isbn(isbn)
 
@@ -227,6 +288,7 @@ def test_fetch_by_isbn_googlebooks_only(monkeypatch):
         "https://books.google.com/thumb.jpg": _cover_response(size=2000, content_type="image/png"),
     }
     monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
 
     record = metadata.fetch_by_isbn(isbn, include_description=True)
 
@@ -245,6 +307,7 @@ def test_fetch_by_isbn_all_sources_empty_returns_none(monkeypatch):
         metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
     }
     monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
 
     assert metadata.fetch_by_isbn(isbn) is None
 
@@ -260,6 +323,7 @@ def test_fetch_by_isbn_google_429_handled_gracefully(monkeypatch):
         metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=429, json_data={"error": "rate limited"}),
     }
     monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
 
     record = metadata.fetch_by_isbn(isbn)
 
@@ -284,9 +348,14 @@ def test_fetch_by_isbn_googlebooks_connection_error_does_not_raise(monkeypatch):
             return _no_cover_response()
         if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
             return _empty_sru_response()
+        if url == metadata._OPAC_SBN_URL:
+            return _empty_opacsbn_response()
+        if url.startswith("https://isbnsearch.org/isbn/"):
+            return _empty_isbnsearch_response()
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     record = metadata.fetch_by_isbn(isbn)
 
@@ -306,9 +375,14 @@ def test_fetch_by_isbn_openlibrary_error_does_not_kill_googlebooks_data(monkeypa
             return _googlebooks_response(thumbnail="")
         if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
             return _empty_sru_response()
+        if url == metadata._OPAC_SBN_URL:
+            return _empty_opacsbn_response()
+        if url.startswith("https://isbnsearch.org/isbn/"):
+            return _empty_isbnsearch_response()
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     record = metadata.fetch_by_isbn(isbn)
 
@@ -339,9 +413,14 @@ def test_fetch_by_isbn_strips_non_digits_from_raw_barcode(monkeypatch):
         if url == metadata._BNF_SRU_URL:
             assert clean in kwargs["params"]["query"]
             return _empty_sru_response()
+        if url == metadata._OPAC_SBN_URL:
+            return _empty_opacsbn_response()
+        if url.startswith("https://isbnsearch.org/isbn/"):
+            return _empty_isbnsearch_response()
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     record = metadata.fetch_by_isbn(raw_barcode)
 
@@ -366,9 +445,14 @@ def test_fetch_by_isbn_uses_env_api_key(monkeypatch):
             return _googlebooks_response(thumbnail="")
         if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
             return _empty_sru_response()
+        if url == metadata._OPAC_SBN_URL:
+            return _empty_opacsbn_response()
+        if url.startswith("https://isbnsearch.org/isbn/"):
+            return _empty_isbnsearch_response()
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     record = metadata.fetch_by_isbn(isbn)
     assert record is not None
@@ -383,6 +467,7 @@ def test_fetch_by_isbn_include_description_false_still_merges_other_fields(monke
         metadata._GOOGLE_BOOKS_URL: _googlebooks_response(thumbnail=""),
     }
     monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
 
     record = metadata.fetch_by_isbn(isbn, include_description=False)
 
@@ -405,8 +490,11 @@ def test_fetch_by_isbn_dnb_contributes_when_others_empty(monkeypatch):
             date="2002",
         ),
         metadata._BNF_SRU_URL: _empty_sru_response(),
+        metadata._OPAC_SBN_URL: _empty_opacsbn_response(),
+        "https://isbnsearch.org/isbn/": _empty_isbnsearch_response(),
     }
     monkeypatch.setattr(requests, "get", _dispatch(mapping, default_empty_sru=False))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping, default_empty_sru=False))
 
     record = metadata.fetch_by_isbn(isbn)
 
@@ -430,8 +518,11 @@ def test_fetch_by_isbn_bnf_contributes_and_cleans_creator_name(monkeypatch):
             publisher="Gallimard",
             date="1971",
         ),
+        metadata._OPAC_SBN_URL: _empty_opacsbn_response(),
+        "https://isbnsearch.org/isbn/": _empty_isbnsearch_response(),
     }
     monkeypatch.setattr(requests, "get", _dispatch(mapping, default_empty_sru=False))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping, default_empty_sru=False))
 
     record = metadata.fetch_by_isbn(isbn)
 
@@ -446,6 +537,10 @@ def test_fetch_by_isbn_dnb_and_bnf_error_does_not_kill_other_sources(monkeypatch
     def fake_get(url, **kwargs):
         if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
             raise requests.exceptions.ConnectionError("boom")
+        if url == metadata._OPAC_SBN_URL:
+            return _empty_opacsbn_response()
+        if url.startswith("https://isbnsearch.org/isbn/"):
+            return _empty_isbnsearch_response()
         if url == metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn):
             return _openlibrary_edition_response()
         if url == metadata._OPENLIBRARY_RESOURCE_URL.format(key="/authors/OL79034A"):
@@ -459,6 +554,7 @@ def test_fetch_by_isbn_dnb_and_bnf_error_does_not_kill_other_sources(monkeypatch
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     record = metadata.fetch_by_isbn(isbn)
 
@@ -486,9 +582,14 @@ def test_fetch_openlibrary_caps_author_lookups(monkeypatch):
             return FakeResponse(status_code=200, json_data={"items": []})
         if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
             return _empty_sru_response()
+        if url == metadata._OPAC_SBN_URL:
+            return _empty_opacsbn_response()
+        if url.startswith("https://isbnsearch.org/isbn/"):
+            return _empty_isbnsearch_response()
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     record = metadata.fetch_by_isbn(isbn)
 
@@ -515,9 +616,14 @@ def test_fetch_openlibrary_work_lookup_failure_does_not_lose_other_fields(monkey
             return FakeResponse(status_code=200, json_data={"items": []})
         if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
             return _empty_sru_response()
+        if url == metadata._OPAC_SBN_URL:
+            return _empty_opacsbn_response()
+        if url.startswith("https://isbnsearch.org/isbn/"):
+            return _empty_isbnsearch_response()
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     record = metadata.fetch_by_isbn(isbn)
 
@@ -532,6 +638,7 @@ def test_fetch_sru_dc_malformed_xml_returns_empty(monkeypatch):
         return FakeResponse(status_code=200, content=b"not xml at all <<<")
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     assert metadata._fetch_dnb("9780441172719") == {}
 
@@ -540,6 +647,109 @@ def test_clean_creator_name_reorders_last_first():
     assert metadata._clean_creator_name("Bloch, Joshua [Verfasser]") == "Joshua Bloch"
     assert metadata._clean_creator_name("Camus, Albert (1913-1960). Auteur du texte") == "Albert Camus"
     assert metadata._clean_creator_name("Frank Herbert") == "Frank Herbert"
+
+
+# ---------------------------------------------------------------------------
+# _fetch_opacsbn
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_opacsbn_parses_title_creator_publisher_year(monkeypatch):
+    def fake_post(url, **kwargs):
+        assert url == metadata._OPAC_SBN_URL
+        assert kwargs["data"]["fieldvalue[0]"] == "9788807881114"
+        return _opacsbn_response(
+            title="In ogni caso nessun rimorso",
+            creator="Cacucci, Pino",
+            place_publisher_year="Milano : Feltrinelli, 2013",
+        )
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    result = metadata._fetch_opacsbn("9788807881114")
+
+    assert result["title"] == "In ogni caso nessun rimorso"
+    assert result["authors"] == ["Pino Cacucci"]
+    assert result["publisher"] == "Feltrinelli"
+    assert result["published_date"] == "2013"
+
+
+def test_fetch_opacsbn_no_hit_returns_empty_dict(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda url, **kwargs: _empty_opacsbn_response())
+    monkeypatch.setattr(requests, "post", lambda url, **kwargs: _empty_opacsbn_response())
+
+    assert metadata._fetch_opacsbn("0000000000000") == {}
+
+
+def test_fetch_opacsbn_connection_error_returns_empty_dict(monkeypatch):
+    def fake_get(url, **kwargs):
+        raise requests.exceptions.ConnectionError("boom")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
+
+    assert metadata._fetch_opacsbn("9788807881114") == {}
+
+
+def test_fetch_opacsbn_malformed_json_returns_empty_dict(monkeypatch):
+    monkeypatch.setattr(
+        requests, "get", lambda url, **kwargs: FakeResponse(status_code=200, content=b"not json at all")
+    )
+
+    assert metadata._fetch_opacsbn("9788807881114") == {}
+
+
+# ---------------------------------------------------------------------------
+# _fetch_isbnsearch
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_isbnsearch_parses_title_author_publisher_published(monkeypatch):
+    def fake_get(url, **kwargs):
+        assert url == metadata._ISBNSEARCH_URL.format(isbn="9788807881114")
+        assert kwargs["headers"]["User-Agent"] == metadata._BROWSER_USER_AGENT
+        return _isbnsearch_response(
+            title="In ogni caso nessun rimorso",
+            author="Pino Cacucci",
+            publisher="Feltrinelli",
+            published_date="2013",
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
+
+    result = metadata._fetch_isbnsearch("9788807881114")
+
+    assert result["title"] == "In ogni caso nessun rimorso"
+    assert result["authors"] == ["Pino Cacucci"]
+    assert result["publisher"] == "Feltrinelli"
+    assert result["published_date"] == "2013"
+
+
+def test_fetch_isbnsearch_404_returns_empty_dict(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda url, **kwargs: FakeResponse(status_code=404))
+    monkeypatch.setattr(requests, "post", lambda url, **kwargs: FakeResponse(status_code=404))
+
+    assert metadata._fetch_isbnsearch("0000000000000") == {}
+
+
+def test_fetch_isbnsearch_connection_error_returns_empty_dict(monkeypatch):
+    def fake_get(url, **kwargs):
+        raise requests.exceptions.ConnectionError("boom")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
+
+    assert metadata._fetch_isbnsearch("9788807881114") == {}
+
+
+def test_fetch_isbnsearch_botcheck_page_returns_empty_dict(monkeypatch):
+    """isbnsearch.org intermittently serves a reCAPTCHA bot-check page (still HTTP 200) instead
+    of the real book page -- must be treated as a miss, not parsed as a real title."""
+    monkeypatch.setattr(requests, "get", lambda url, **kwargs: _isbnsearch_botcheck_response())
+    monkeypatch.setattr(requests, "post", lambda url, **kwargs: _isbnsearch_botcheck_response())
+
+    assert metadata._fetch_isbnsearch("9788807881114") == {}
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +766,7 @@ def test_fetch_description_calls_only_googlebooks(monkeypatch):
         raise AssertionError(f"unexpected URL requested: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     assert metadata.fetch_description(isbn) == "A desert planet epic."
 
@@ -565,6 +776,7 @@ def test_fetch_description_no_hit_returns_empty_string(monkeypatch):
         return FakeResponse(status_code=200, json_data={"items": []})
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     assert metadata.fetch_description("9780441172719") == ""
 
@@ -600,6 +812,7 @@ def test_search_by_title_author_parses_docs(monkeypatch):
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     results = metadata.search_by_title_author("Dune", "Frank Herbert")
 
@@ -620,6 +833,7 @@ def test_search_by_title_author_no_cover_id_skips_download(monkeypatch):
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     results = metadata.search_by_title_author("Foundation")
 
@@ -632,6 +846,7 @@ def test_search_by_title_author_returns_empty_list_on_error(monkeypatch):
         raise requests.exceptions.ConnectionError("network down")
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     assert metadata.search_by_title_author("Dune") == []
 
@@ -641,6 +856,7 @@ def test_search_by_title_author_returns_empty_list_on_bad_json(monkeypatch):
         return FakeResponse(status_code=200, json_data=None)  # .json() raises ValueError
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     assert metadata.search_by_title_author("Dune") == []
 
@@ -654,5 +870,6 @@ def test_search_by_title_author_http_error_status_returns_empty_list(monkeypatch
         return FakeResponse(status_code=500, json_data={})
 
     monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_get)
 
     assert metadata.search_by_title_author("Dune") == []

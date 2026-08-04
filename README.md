@@ -85,17 +85,19 @@ the same screen.
 - **Engine.** `python/engine/library.py` is the one real code path for every book operation —
   `python/main.py` (WebUI) and `python/cli.py` (terminal) both call into it, so behavior can
   never diverge between the two front ends.
-- **Metadata.** `python/engine/metadata.py` queries four sources concurrently by ISBN — Open
-  Library, Google Books, and two national-library SRU catalogs (Deutsche Nationalbibliothek and
-  Bibliothèque nationale de France, sharing one Dublin-Core XML parsing helper) — merging
-  field-by-field (first non-empty value wins, longest description wins, cover falls back Open
-  Library → Google thumbnail); `source` reports which of the four actually hit. Fetching the
-  synopsis specifically is optional per-call (`include_description`), since Google Books is the
-  only source that ever has one — the Settings "fetch synopsis automatically" toggle controls the
-  default, and `fetch_description`/the manual "Fetch synopsis" button call Google Books alone.
-  `search_by_title_author` backs both the AI-describe and OCR-candidate-resolution flows. A
-  Google Books API key is optional.
-- **Web-search metadata fallback.** When all four catalog sources miss, `python/engine/
+- **Metadata.** `python/engine/metadata.py` queries six sources concurrently by ISBN — Open
+  Library, Google Books, two national-library SRU catalogs (Deutsche Nationalbibliothek and
+  Bibliothèque nationale de France, sharing one Dublin-Core XML parsing helper), Italy's OPAC SBN
+  union catalog (ICCU's own search-frontend JSON endpoint, undocumented but confirmed reliable and
+  correctly ISBN-scoped), and isbnsearch.org (a third-party ISBNdb-backed page, scraped via
+  regex) — merging field-by-field (first non-empty value wins, longest description wins, cover
+  falls back Open Library → Google thumbnail); `source` reports which of the six actually hit.
+  Fetching the synopsis specifically is optional per-call (`include_description`), since Google
+  Books is the only source that ever has one — the Settings "fetch synopsis automatically" toggle
+  controls the default, and `fetch_description`/the manual "Fetch synopsis" button call Google
+  Books alone. `search_by_title_author` backs both the AI-describe and OCR-candidate-resolution
+  flows. A Google Books API key is optional.
+- **Web-search metadata fallback.** When all six catalog sources miss, `python/engine/
   web_lookup.py`'s `WebMetadataFallback` scrapes a handful of DuckDuckGo Lite search-result
   snippets for the ISBN and has the local LLM guess a `{title, author}` from them — never
   inventing one, and only ever proposed, never trusted outright: `library.py` resolves the guess
@@ -140,8 +142,9 @@ the same screen.
   light theme is a `[data-theme="light"]` CSS-variable override block in `style.css` — every
   other rule in the file already consumes those variables, so no other CSS changes were needed.
 - **Live ISBN lookup status.** An "Look up an ISBN" preview no longer just shows a static
-  "Looking up..." message: `engine/metadata.py`'s `fetch_by_isbn` reports each of its four
-  concurrent catalog fetches (Open Library, Google Books, DNB, BNF) the moment that source's own
+  "Looking up..." message: `engine/metadata.py`'s `fetch_by_isbn` reports each of its six
+  concurrent catalog fetches (Open Library, Google Books, DNB, BNF, OPAC SBN, isbnsearch.org) the
+  moment that source's own
   thread finishes, in whatever order they actually complete; `library.py`'s `lookup_isbn` and
   `main.py` relay each step over the same Socket.IO channel as scan/save toasts as a `lookup_status`
   event, and `app.js` renders a per-source checklist that flips from spinner to check/miss live,
