@@ -66,6 +66,15 @@ REST API (all bodies/responses are JSON except the cover-image route, see below)
                                             Returns {"added": int, "skipped": int, "errors": [...]}.
   GET    /api/locations                -- {"room": [...], "floor": [...], "column": [...],
                                             "shelf": [...]} distinct values, for autocomplete.
+  GET    /api/settings                 -- shared app preferences (fetch_synopsis_default,
+                                            ui_language, ui_theme), server-side and common to every
+                                            device viewing this app. Returns the settings dict.
+  POST   /api/settings                 -- body SettingsIn (all fields optional, partial update).
+                                            Returns the updated settings dict.
+  POST   /api/synopsis/{isbn}          -- manual "fetch synopsis" button, for when
+                                            fetch_synopsis_default is off and a scanned/looked-up
+                                            book has no description yet. Returns
+                                            {"description": "..."} ("" if no source has one).
   GET    /api/books/{book_id}/cover    -- raw image bytes with the book's real cover_mime as
                                             Content-Type (404 if the book has no cover). This is
                                             the one route NOT registered via ui.expose_api(): the
@@ -180,6 +189,12 @@ class ImportCsvIn(BaseModel):
     csv: str
 
 
+class SettingsIn(BaseModel):
+    fetch_synopsis_default: bool | None = None
+    ui_language: str | None = None
+    ui_theme: str | None = None
+
+
 def main():
     library = create_library(db_name=_DB_NAME)
     library.notify_startup()
@@ -276,6 +291,20 @@ def main():
     def import_csv(body: ImportCsvIn):
         return library.import_csv(body.csv)
 
+    # -- settings ---------------------------------------------------------------------------
+
+    def get_settings():
+        return library.get_settings()
+
+    def update_settings(body: SettingsIn):
+        try:
+            return library.update_settings(body.dict(exclude_unset=True))
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+    def fetch_synopsis(isbn: str):
+        return {"description": library.fetch_synopsis(isbn)}
+
     ui.expose_api("GET", "/api/books", list_books)
     ui.expose_api("GET", "/api/books/{book_id}", get_book)
     ui.expose_api("POST", "/api/books", create_book)
@@ -293,6 +322,10 @@ def main():
     ui.expose_api("POST", "/api/scan_photo", scan_photo)
 
     ui.expose_api("POST", "/api/import_csv", import_csv)
+
+    ui.expose_api("GET", "/api/settings", get_settings)
+    ui.expose_api("POST", "/api/settings", update_settings)
+    ui.expose_api("POST", "/api/synopsis/{isbn}", fetch_synopsis)
 
     # Raw-bytes route, mounted directly on the Brick's own FastAPI instance -- see module
     # docstring's "GET /api/books/{book_id}/cover" entry for why this bypasses expose_api().

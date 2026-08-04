@@ -1,15 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (C) TechaQ contributors
 #
 # SPDX-License-Identifier: MPL-2.0
-"""Metadata lookup: fetch a BookRecord for a scanned/typed ISBN by querying Open Library and
-Google Books and merging their results, or search by title/author for the AI describe-to-find
-feature and OCR candidate resolution.
+"""Metadata lookup: fetch a BookRecord for a scanned/typed ISBN by querying Open Library, Google
+Books, and the German (DNB) and French (BNF) national library SRU catalogs concurrently and
+merging their results, or search by title/author for the AI describe-to-find feature and OCR
+candidate resolution.
 
 Both public functions are network-call-testable: all HTTP access goes through plain
 `requests.get(url, timeout=...)` calls (no session objects) so tests can monkeypatch/mock
 `requests.get` directly. Neither function ever raises out to the caller -- any network/parsing
 failure is logged and treated as "no data from that source" (fetch_by_isbn only returns None if
-BOTH sources found nothing; search_by_title_author returns [] on any error).
+every source found nothing; search_by_title_author returns [] on any error).
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -32,6 +35,15 @@ _OPENLIBRARY_COVER_URL = "https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg"
 _OPENLIBRARY_SEARCH_URL = "https://openlibrary.org/search.json"
 _OPENLIBRARY_COVER_BY_ID_URL = "https://covers.openlibrary.org/b/id/{cover_id}-M.jpg"
 _GOOGLE_BOOKS_URL = "https://www.googleapis.com/books/v1/volumes"
+_DNB_SRU_URL = "https://services.dnb.de/sru/dnb"
+_BNF_SRU_URL = "https://catalogue.bnf.fr/api/SRU"
+
+# Role/relator annotations that national-library catalogs append to creator names, e.g.
+# "Bloch, Joshua [Verfasser]" (DNB) or "Camus, Albert (1913-1960). Auteur du texte" (BNF).
+_CREATOR_ROLE_RE = re.compile(
+    r"\.\s*(?:Auteur|Autrice|Verfasser|Editor|Éditeur|Illustrator|Übers)", re.IGNORECASE
+)
+_BRACKETED_RE = re.compile(r"[\[\(][^\]\)]*[\]\)]")
 
 
 def _clean_isbn(isbn: str) -> str:
@@ -134,6 +146,91 @@ def _fetch_googlebooks(isbn: str) -> dict:
     return out
 
 
+def _clean_creator_name(raw: str) -> str:
+    """Best-effort tidy-up of a Dublin Core dc:creator value from a library-catalog SRU record:
+    strip trailing role annotations (e.g. "[Verfasser]", ". Auteur du texte") and reorder a
+    "Last, First" shape to "First Last". Falls back to the raw string if it doesn't match."""
+    name = _BRACKETED_RE.sub("", raw)
+    name = _CREATOR_ROLE_RE.split(name)[0]
+    name = name.strip().rstrip(".")
+    if "," in name:
+        last, _, first = name.partition(",")
+        last, first = last.strip(), first.strip()
+        # Drop a trailing "(1913-1960)"-style date span that partition may have left on `first`.
+        first = re.sub(r"\(\d{4}-?\d{0,4}\)\s*$", "", first).strip()
+        if last and first:
+            name = f"{first} {last}"
+        else:
+            name = last or first or name
+    return name.strip()
+
+
+def _fetch_sru_dc(base_url: str, query: str, isbn: str, source_name: str) -> dict:
+    """GET an SRU endpoint with an oai_dc/Dublin Core `recordSchema` and return a dict of fields
+    parsed from the first matching record, or {} on any failure/no-hit. Never raises. Shared by
+    every national-library SRU source (DNB, BNF) since they return the same XML shape."""
+    out: dict = {}
+    try:
+        resp = requests.get(
+            base_url,
+            params={
+                "version": "1.2",
+                "operation": "searchRetrieve",
+                "query": query,
+                "recordSchema": "dc",
+                "maximumRecords": 1,
+            },
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except requests.RequestException as exc:
+        log.warning("%s SRU lookup failed for isbn %s: %s", source_name, isbn, exc)
+        return out
+    except ET.ParseError as exc:
+        log.warning("%s SRU response parse failed for isbn %s: %s", source_name, isbn, exc)
+        return out
+
+    ns = {"dc": "http://purl.org/dc/elements/1.1/"}
+    record = root.find(".//dc:title/..", ns)
+    if record is None:
+        return out
+
+    def texts(tag: str) -> list[str]:
+        return [el.text.strip() for el in record.findall(f"dc:{tag}", ns) if el.text and el.text.strip()]
+
+    titles = texts("title")
+    if titles:
+        out["title"] = titles[0]
+    creators = [_clean_creator_name(c) for c in texts("creator")]
+    if creators:
+        out["authors"] = [c for c in creators if c]
+    publishers = texts("publisher")
+    if publishers:
+        out["publisher"] = publishers[-1]  # national catalogs often list place then publisher.
+    dates = texts("date")
+    if dates:
+        out["published_date"] = dates[0]
+    subjects = texts("subject")
+    if subjects:
+        out["categories"] = subjects
+
+    return out
+
+
+def _fetch_dnb(isbn: str) -> dict:
+    """Return a dict of fields found from the Deutsche Nationalbibliothek's free, keyless SRU
+    catalog, or {} on any failure/no-hit. Never raises."""
+    return _fetch_sru_dc(_DNB_SRU_URL, f"isbn={isbn}", isbn, "DNB")
+
+
+def _fetch_bnf(isbn: str) -> dict:
+    """Return a dict of fields found from the Bibliothèque nationale de France's free, keyless
+    SRU catalog, or {} on any failure/no-hit. Never raises. Uses the "fuzzyIsbn" index, which
+    (unlike the plain "isbn" index) reliably matches regardless of hyphenation."""
+    return _fetch_sru_dc(_BNF_SRU_URL, f'bib.fuzzyIsbn all "{isbn}"', isbn, "BNF")
+
+
 def _richer(a, b):
     """Pick the "richer" of two values of the same field when both sources have one: longer
     string, or the list with more entries. Falls back to whichever is truthy."""
@@ -148,34 +245,51 @@ def _richer(a, b):
     return a or b
 
 
-def fetch_by_isbn(isbn: str) -> BookRecord | None:
-    """Look up a book by ISBN-10/ISBN-13/raw EAN-13 barcode, querying Open Library and Google
-    Books and merging their results into one BookRecord. Returns None only if neither source
-    found anything."""
+def fetch_by_isbn(isbn: str, include_description: bool = False) -> BookRecord | None:
+    """Look up a book by ISBN-10/ISBN-13/raw EAN-13 barcode, querying Open Library, Google Books,
+    DNB, and BNF concurrently and merging their results into one BookRecord. Returns None only if
+    every source found nothing.
+
+    `include_description` defaults to False (skip fetching the synopsis) so a scan/save doesn't
+    pay for Google Books' description text on the default path -- every other field still merges
+    normally from whichever sources hit, so this doesn't reduce lookup coverage, only the
+    synopsis. Pass True (or use `fetch_description` directly) to include it."""
     clean = _clean_isbn(isbn)
     if not clean:
         return None
 
-    ol = _fetch_openlibrary(clean)
-    gb = _fetch_googlebooks(clean)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        ol_future = pool.submit(_fetch_openlibrary, clean)
+        gb_future = pool.submit(_fetch_googlebooks, clean)
+        dnb_future = pool.submit(_fetch_dnb, clean)
+        bnf_future = pool.submit(_fetch_bnf, clean)
+        ol = ol_future.result()
+        gb = gb_future.result()
+        dnb = dnb_future.result()
+        bnf = bnf_future.result()
 
-    if not ol and not gb:
+    results = [("openlibrary", ol), ("googlebooks", gb), ("dnb", dnb), ("bnf", bnf)]
+    sources = [name for name, data in results if data]
+    if not sources:
         return None
 
-    sources = []
-    if ol:
-        sources.append("openlibrary")
-    if gb:
-        sources.append("googlebooks")
+    def merged(field: str):
+        value = None
+        for _, data in results:
+            value = _richer(value, data.get(field))
+        return value
 
-    title = _richer(ol.get("title", ""), gb.get("title", ""))
-    subtitle = _richer(ol.get("subtitle", ""), gb.get("subtitle", ""))
-    authors = _richer(ol.get("authors", []), gb.get("authors", []))
-    publisher = _richer(ol.get("publisher", ""), gb.get("publisher", ""))
-    published_date = _richer(ol.get("published_date", ""), gb.get("published_date", ""))
-    description = _richer(ol.get("description", ""), gb.get("description", ""))
-    categories = _richer(ol.get("categories", []), gb.get("categories", []))
+    title = merged("title")
+    subtitle = merged("subtitle")
+    authors = merged("authors")
+    publisher = merged("publisher")
+    published_date = merged("published_date")
+    categories = merged("categories")
     language = ol.get("language") or gb.get("language") or ""
+
+    description = ""
+    if include_description:
+        description = merged("description") or ""
 
     page_count = ol.get("page_count")
     if page_count is None:
@@ -194,7 +308,7 @@ def fetch_by_isbn(isbn: str) -> BookRecord | None:
         authors=authors or [],
         publisher=publisher or "",
         published_date=published_date or "",
-        description=description or "",
+        description=description,
         cover_image=cover_image,
         cover_mime=cover_mime or "",
         page_count=page_count,
@@ -212,6 +326,16 @@ def fetch_by_isbn(isbn: str) -> BookRecord | None:
         record.isbn13 = clean
 
     return record
+
+
+def fetch_description(isbn: str) -> str:
+    """Fetch only the synopsis/description for an ISBN, for the manual "fetch synopsis" button --
+    a deliberately narrow, single-source, fast call, since Google Books is the only integrated
+    source that ever has a description. Returns "" on any failure or no-hit. Never raises."""
+    clean = _clean_isbn(isbn)
+    if not clean:
+        return ""
+    return _fetch_googlebooks(clean).get("description", "") or ""
 
 
 def search_by_title_author(title: str, author: str = "") -> list[BookRecord]:

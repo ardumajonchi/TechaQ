@@ -1,15 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (C) TechaQ contributors
 #
 # SPDX-License-Identifier: MPL-2.0
-"""Tests for engine/metadata.py: fetch_by_isbn (Open Library + Google Books merge logic, richer-
-value-wins, graceful 429/error handling, cover-image fallback) and search_by_title_author (Open
+"""Tests for engine/metadata.py: fetch_by_isbn (Open Library + Google Books + DNB + BNF merge
+logic, richer-value-wins, graceful 429/error handling, cover-image fallback, deferred-description
+gating), fetch_description (Google-Books-only synopsis fetch), and search_by_title_author (Open
 Library search parsing, empty-on-error). All network access is mocked via monkeypatching
 requests.get -- no real HTTP calls are made.
 """
 
 from __future__ import annotations
-
-import json
 
 import pytest
 import requests
@@ -87,13 +86,55 @@ def _no_cover_response():
     return FakeResponse(status_code=200, content=b"g" * 40, headers={"Content-Type": "image/gif"})
 
 
-def _dispatch(mapping):
-    """Build a fake requests.get(url, **kwargs) that looks up a canned response by URL prefix."""
+def _sru_dc_response(title="", creator="", publisher="", date="", identifier="", subject=""):
+    """A minimal-but-realistic DNB/BNF-shaped SRU searchRetrieve response with one record, or a
+    zero-record response if title is empty."""
+    if not title:
+        return FakeResponse(
+            status_code=200,
+            content=(
+                b'<?xml version="1.0" encoding="UTF-8"?>'
+                b'<searchRetrieveResponse xmlns="http://www.loc.gov/zing/srw/">'
+                b"<numberOfRecords>0</numberOfRecords><records/></searchRetrieveResponse>"
+            ),
+        )
+    fields = f"<dc:title>{title}</dc:title>"
+    if creator:
+        fields += f"<dc:creator>{creator}</dc:creator>"
+    if publisher:
+        fields += f"<dc:publisher>{publisher}</dc:publisher>"
+    if date:
+        fields += f"<dc:date>{date}</dc:date>"
+    if identifier:
+        fields += f"<dc:identifier>{identifier}</dc:identifier>"
+    if subject:
+        fields += f"<dc:subject>{subject}</dc:subject>"
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<searchRetrieveResponse xmlns="http://www.loc.gov/zing/srw/">'
+        "<numberOfRecords>1</numberOfRecords><records><record>"
+        '<recordData><dc xmlns:dc="http://purl.org/dc/elements/1.1/" '
+        'xmlns="http://www.openarchives.org/OAI/2.0/oai_dc/">'
+        f"{fields}</dc></recordData></record></records></searchRetrieveResponse>"
+    )
+    return FakeResponse(status_code=200, content=xml.encode("utf-8"))
+
+
+def _empty_sru_response():
+    return _sru_dc_response()
+
+
+def _dispatch(mapping, default_empty_sru=True):
+    """Build a fake requests.get(url, **kwargs) that looks up a canned response by URL prefix.
+    DNB/BNF default to an empty (zero-record) SRU response unless explicitly overridden in
+    `mapping`, so existing tests don't need to know about every source."""
 
     def fake_get(url, **kwargs):
         for prefix, response in mapping.items():
             if url.startswith(prefix):
                 return response(**kwargs) if callable(response) and not isinstance(response, FakeResponse) else response
+        if default_empty_sru and url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
+            return _empty_sru_response()
         raise AssertionError(f"unexpected URL requested: {url}")
 
     return fake_get
@@ -113,7 +154,7 @@ def test_fetch_by_isbn_merges_both_sources(monkeypatch):
     }
     monkeypatch.setattr(requests, "get", _dispatch(mapping))
 
-    record = metadata.fetch_by_isbn(isbn)
+    record = metadata.fetch_by_isbn(isbn, include_description=True)
 
     assert record is not None
     assert record.title == "Dune"
@@ -171,7 +212,7 @@ def test_fetch_by_isbn_googlebooks_only(monkeypatch):
     }
     monkeypatch.setattr(requests, "get", _dispatch(mapping))
 
-    record = metadata.fetch_by_isbn(isbn)
+    record = metadata.fetch_by_isbn(isbn, include_description=True)
 
     assert record is not None
     assert record.source == "googlebooks"
@@ -181,7 +222,7 @@ def test_fetch_by_isbn_googlebooks_only(monkeypatch):
     assert record.cover_image == b"x" * 2000
 
 
-def test_fetch_by_isbn_both_sources_empty_returns_none(monkeypatch):
+def test_fetch_by_isbn_all_sources_empty_returns_none(monkeypatch):
     isbn = "0000000000000"
     mapping = {
         metadata._OPENLIBRARY_BOOKS_URL: FakeResponse(status_code=200, json_data={}),
@@ -218,6 +259,8 @@ def test_fetch_by_isbn_googlebooks_connection_error_does_not_raise(monkeypatch):
             return _openlibrary_books_response(isbn)
         if url.startswith(metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn)):
             return _no_cover_response()
+        if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
+            return _empty_sru_response()
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
@@ -238,6 +281,8 @@ def test_fetch_by_isbn_openlibrary_error_does_not_kill_googlebooks_data(monkeypa
             raise requests.exceptions.Timeout("slow")
         if url.startswith(metadata._GOOGLE_BOOKS_URL):
             return _googlebooks_response(thumbnail="")
+        if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
+            return _empty_sru_response()
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
@@ -252,10 +297,8 @@ def test_fetch_by_isbn_openlibrary_error_does_not_kill_googlebooks_data(monkeypa
 def test_fetch_by_isbn_strips_non_digits_from_raw_barcode(monkeypatch):
     raw_barcode = "978-0-441-17271-9"
     clean = "9780441172719"
-    seen_urls = []
 
     def fake_get(url, **kwargs):
-        seen_urls.append(url)
         if url.startswith(metadata._OPENLIBRARY_BOOKS_URL):
             assert kwargs["params"]["bibkeys"] == f"ISBN:{clean}"
             return _openlibrary_books_response(clean)
@@ -264,6 +307,12 @@ def test_fetch_by_isbn_strips_non_digits_from_raw_barcode(monkeypatch):
         if url.startswith(metadata._GOOGLE_BOOKS_URL):
             assert kwargs["params"]["q"] == f"isbn:{clean}"
             return FakeResponse(status_code=200, json_data={"items": []})
+        if url == metadata._DNB_SRU_URL:
+            assert kwargs["params"]["query"] == f"isbn={clean}"
+            return _empty_sru_response()
+        if url == metadata._BNF_SRU_URL:
+            assert clean in kwargs["params"]["query"]
+            return _empty_sru_response()
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
@@ -289,12 +338,148 @@ def test_fetch_by_isbn_uses_env_api_key(monkeypatch):
         if url.startswith(metadata._GOOGLE_BOOKS_URL):
             assert kwargs["params"]["key"] == "secret-key"
             return _googlebooks_response(thumbnail="")
+        if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
+            return _empty_sru_response()
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr(requests, "get", fake_get)
 
     record = metadata.fetch_by_isbn(isbn)
     assert record is not None
+
+
+def test_fetch_by_isbn_include_description_false_still_merges_other_fields(monkeypatch):
+    """The default (include_description=False) must not reduce coverage of any other field --
+    only the synopsis text is withheld."""
+    isbn = "9780441172719"
+    mapping = {
+        metadata._OPENLIBRARY_BOOKS_URL: FakeResponse(status_code=200, json_data={}),
+        metadata._GOOGLE_BOOKS_URL: _googlebooks_response(thumbnail=""),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+
+    record = metadata.fetch_by_isbn(isbn, include_description=False)
+
+    assert record is not None
+    assert record.title == "Dune"
+    assert record.authors == ["Frank Herbert"]
+    assert record.publisher == "Ace Books"
+    assert record.description == ""
+
+
+def test_fetch_by_isbn_dnb_contributes_when_others_empty(monkeypatch):
+    isbn = "9783827319333"
+    mapping = {
+        metadata._OPENLIBRARY_BOOKS_URL: FakeResponse(status_code=200, json_data={}),
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
+        metadata._DNB_SRU_URL: _sru_dc_response(
+            title="Effektiv Java programmieren",
+            creator="Bloch, Joshua [Verfasser]",
+            publisher="Addison-Wesley",
+            date="2002",
+        ),
+        metadata._BNF_SRU_URL: _empty_sru_response(),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping, default_empty_sru=False))
+
+    record = metadata.fetch_by_isbn(isbn)
+
+    assert record is not None
+    assert record.source == "dnb"
+    assert record.title == "Effektiv Java programmieren"
+    assert record.authors == ["Joshua Bloch"]
+    assert record.publisher == "Addison-Wesley"
+    assert record.published_date == "2002"
+
+
+def test_fetch_by_isbn_bnf_contributes_and_cleans_creator_name(monkeypatch):
+    isbn = "9782070360024"
+    mapping = {
+        metadata._OPENLIBRARY_BOOKS_URL: FakeResponse(status_code=200, json_data={}),
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
+        metadata._DNB_SRU_URL: _empty_sru_response(),
+        metadata._BNF_SRU_URL: _sru_dc_response(
+            title="L'Etranger",
+            creator="Camus, Albert (1913-1960). Auteur du texte",
+            publisher="Gallimard",
+            date="1971",
+        ),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping, default_empty_sru=False))
+
+    record = metadata.fetch_by_isbn(isbn)
+
+    assert record is not None
+    assert record.source == "bnf"
+    assert record.authors == ["Albert Camus"]
+
+
+def test_fetch_by_isbn_dnb_and_bnf_error_does_not_kill_other_sources(monkeypatch):
+    isbn = "9780441172719"
+
+    def fake_get(url, **kwargs):
+        if url in (metadata._DNB_SRU_URL, metadata._BNF_SRU_URL):
+            raise requests.exceptions.ConnectionError("boom")
+        if url.startswith(metadata._OPENLIBRARY_BOOKS_URL):
+            return _openlibrary_books_response(isbn)
+        if url.startswith(metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn)):
+            return _no_cover_response()
+        if url.startswith(metadata._GOOGLE_BOOKS_URL):
+            return FakeResponse(status_code=200, json_data={"items": []})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    record = metadata.fetch_by_isbn(isbn)
+
+    assert record is not None
+    assert record.source == "openlibrary"
+
+
+def test_fetch_sru_dc_malformed_xml_returns_empty(monkeypatch):
+    def fake_get(url, **kwargs):
+        return FakeResponse(status_code=200, content=b"not xml at all <<<")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    assert metadata._fetch_dnb("9780441172719") == {}
+
+
+def test_clean_creator_name_reorders_last_first():
+    assert metadata._clean_creator_name("Bloch, Joshua [Verfasser]") == "Joshua Bloch"
+    assert metadata._clean_creator_name("Camus, Albert (1913-1960). Auteur du texte") == "Albert Camus"
+    assert metadata._clean_creator_name("Frank Herbert") == "Frank Herbert"
+
+
+# ---------------------------------------------------------------------------
+# fetch_description
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_description_calls_only_googlebooks(monkeypatch):
+    isbn = "9780441172719"
+
+    def fake_get(url, **kwargs):
+        if url.startswith(metadata._GOOGLE_BOOKS_URL):
+            return _googlebooks_response(description="A desert planet epic.", thumbnail="")
+        raise AssertionError(f"unexpected URL requested: {url}")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    assert metadata.fetch_description(isbn) == "A desert planet epic."
+
+
+def test_fetch_description_no_hit_returns_empty_string(monkeypatch):
+    def fake_get(url, **kwargs):
+        return FakeResponse(status_code=200, json_data={"items": []})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    assert metadata.fetch_description("9780441172719") == ""
+
+
+def test_fetch_description_empty_input_returns_empty_string():
+    assert metadata.fetch_description("") == ""
 
 
 # ---------------------------------------------------------------------------

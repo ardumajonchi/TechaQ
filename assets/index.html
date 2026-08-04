@@ -4,30 +4,42 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>TechaQ</title>
+
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#14120f" id="theme-color-meta">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TechaQ">
+
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div id="app">
     <header id="topbar">
       <h1>📚 TechaQ</h1>
-      <p class="tagline">Home book inventory</p>
+      <p class="tagline" data-i18n="app.tagline">Home book inventory</p>
     </header>
 
     <nav id="tabbar">
       <button class="tab-btn active" data-view="scan">
-        <span class="tab-icon">📷</span><span class="tab-label">Scan/Add</span>
+        <span class="tab-icon">📷</span><span class="tab-label" data-i18n="nav.scan">Scan/Add</span>
       </button>
       <button class="tab-btn" data-view="library">
-        <span class="tab-icon">📖</span><span class="tab-label">Library</span>
+        <span class="tab-icon">📖</span><span class="tab-label" data-i18n="nav.library">Library</span>
       </button>
       <button class="tab-btn" data-view="ai">
-        <span class="tab-icon">✨</span><span class="tab-label">Ask AI</span>
+        <span class="tab-icon">✨</span><span class="tab-label" data-i18n="nav.ai">Ask AI</span>
       </button>
       <button class="tab-btn" data-view="shelf">
-        <span class="tab-icon">🖼️</span><span class="tab-label">Shelf Photo</span>
+        <span class="tab-icon">🖼️</span><span class="tab-label" data-i18n="nav.shelf">Shelf Photo</span>
       </button>
       <button class="tab-btn" data-view="settings">
-        <span class="tab-icon">⚙️</span><span class="tab-label">Settings</span>
+        <span class="tab-icon">⚙️</span><span class="tab-label" data-i18n="nav.settings">Settings</span>
       </button>
     </nav>
 
@@ -36,23 +48,23 @@
       <!-- ============================== Scan / Add ============================== -->
       <section class="view active" id="view-scan">
         <div class="card">
-          <h2>Recent scans</h2>
-          <p class="hint">Live feed from a connected USB/Bluetooth barcode scanner. Scanning an
+          <h2 data-i18n="scan.recent.title">Recent scans</h2>
+          <p class="hint" data-i18n="scan.recent.hint">Live feed from a connected USB/Bluetooth barcode scanner. Scanning an
             ISBN/EAN auto-saves the book if metadata is found.</p>
           <ul id="scan-log" class="log-list">
-            <li class="empty">No scans yet. Scan a barcode, or look one up below.</li>
+            <li class="empty" data-i18n="scan.recent.empty">No scans yet. Scan a barcode, or look one up below.</li>
           </ul>
         </div>
 
         <div class="card">
-          <h2>Look up an ISBN</h2>
-          <p class="hint">Preview a book's metadata before saving it.</p>
+          <h2 data-i18n="scan.lookup.title">Look up an ISBN</h2>
+          <p class="hint" data-i18n="scan.lookup.hint">Preview a book's metadata before saving it.</p>
           <div class="input-row">
-            <input id="isbn-lookup-input" type="text" inputmode="numeric" placeholder="ISBN or EAN, e.g. 9780134685991">
-            <button id="isbn-lookup-btn">Look up</button>
+            <input id="isbn-lookup-input" type="text" inputmode="numeric" placeholder="ISBN or EAN, e.g. 9780134685991" data-i18n-placeholder="scan.lookup.placeholder">
+            <button id="isbn-lookup-btn" data-i18n="scan.lookup.button">Look up</button>
           </div>
           <label class="scan-photo-label" for="isbn-photo-input">
-            <span class="tab-icon">📷</span> Scan ISBN from photo
+            <span class="tab-icon">📷</span> <span data-i18n="scan.lookup.scanPhoto">Scan ISBN from photo</span>
             <input id="isbn-photo-input" type="file" accept="image/*" capture="environment" class="hidden-file-input">
           </label>
           <p class="status" id="isbn-photo-status"></p>
@@ -61,28 +73,28 @@
         </div>
 
         <div class="card">
-          <h2>Manual entry</h2>
-          <p class="hint">Fallback for books with no barcode, or when metadata lookup fails.</p>
+          <h2 data-i18n="scan.manual.title">Manual entry</h2>
+          <p class="hint" data-i18n="scan.manual.hint">Fallback for books with no barcode, or when metadata lookup fails.</p>
           <form id="manual-add-form" class="book-form">
             <div class="form-grid">
-              <label>Title <input name="title" required></label>
-              <label>Subtitle <input name="subtitle"></label>
-              <label>Authors <input name="authors" placeholder="comma-separated"></label>
-              <label>ISBN-13 <input name="isbn13" inputmode="numeric"></label>
-              <label>ISBN-10 <input name="isbn10" inputmode="numeric"></label>
-              <label>Publisher <input name="publisher"></label>
-              <label>Published date <input name="published_date" placeholder="YYYY or YYYY-MM-DD"></label>
-              <label>Page count <input name="page_count" type="number" min="0"></label>
-              <label>Language <input name="language" placeholder="en"></label>
-              <label>Categories <input name="categories" placeholder="comma-separated"></label>
-              <label class="span-2">Description <textarea name="description" rows="2"></textarea></label>
-              <label>Room <input name="room" list="loc-room-options"></label>
-              <label>Floor <input name="floor" list="loc-floor-options"></label>
-              <label>Column <input name="column" list="loc-column-options"></label>
-              <label>Shelf <input name="shelf" list="loc-shelf-options"></label>
-              <label class="span-2">Notes <textarea name="notes" rows="2"></textarea></label>
+              <label><span data-i18n="field.title.label">Title</span> <input name="title" required></label>
+              <label><span data-i18n="field.subtitle.label">Subtitle</span> <input name="subtitle"></label>
+              <label><span data-i18n="field.authors.label">Authors</span> <input name="authors" placeholder="comma-separated" data-i18n-placeholder="field.commaSeparated"></label>
+              <label><span data-i18n="field.isbn13.label">ISBN-13</span> <input name="isbn13" inputmode="numeric"></label>
+              <label><span data-i18n="field.isbn10.label">ISBN-10</span> <input name="isbn10" inputmode="numeric"></label>
+              <label><span data-i18n="field.publisher.label">Publisher</span> <input name="publisher"></label>
+              <label><span data-i18n="field.publishedDate.label">Published date</span> <input name="published_date" placeholder="YYYY or YYYY-MM-DD" data-i18n-placeholder="field.publishedDate.placeholder"></label>
+              <label><span data-i18n="field.pageCount.label">Page count</span> <input name="page_count" type="number" min="0"></label>
+              <label><span data-i18n="field.language.label">Language</span> <input name="language" placeholder="en"></label>
+              <label><span data-i18n="field.categories.label">Categories</span> <input name="categories" placeholder="comma-separated" data-i18n-placeholder="field.commaSeparated"></label>
+              <label class="span-2"><span data-i18n="field.description.label">Description</span> <textarea name="description" rows="2"></textarea></label>
+              <label><span data-i18n="field.room.label">Room</span> <input name="room" list="loc-room-options"></label>
+              <label><span data-i18n="field.floor.label">Floor</span> <input name="floor" list="loc-floor-options"></label>
+              <label><span data-i18n="field.column.label">Column</span> <input name="column" list="loc-column-options"></label>
+              <label><span data-i18n="field.shelf.label">Shelf</span> <input name="shelf" list="loc-shelf-options"></label>
+              <label class="span-2"><span data-i18n="field.notes.label">Notes</span> <textarea name="notes" rows="2"></textarea></label>
             </div>
-            <button type="submit">Save book</button>
+            <button type="submit" data-i18n="scan.manual.save">Save book</button>
             <p class="status" id="manual-add-status"></p>
           </form>
         </div>
@@ -91,29 +103,29 @@
       <!-- ================================ Library ================================ -->
       <section class="view" id="view-library">
         <div class="card">
-          <h2>Search &amp; filter</h2>
+          <h2 data-i18n="library.search.title">Search &amp; filter</h2>
           <div class="input-row">
-            <input id="library-search-input" type="text" placeholder="Search title, author, notes...">
-            <button id="library-search-btn">Search</button>
+            <input id="library-search-input" type="text" placeholder="Search title, author, notes..." data-i18n-placeholder="library.search.placeholder">
+            <button id="library-search-btn" data-i18n="library.search.button">Search</button>
           </div>
           <div class="filter-grid">
-            <label>Room <select id="filter-room"><option value="">Any</option></select></label>
-            <label>Floor <select id="filter-floor"><option value="">Any</option></select></label>
-            <label>Column <select id="filter-column"><option value="">Any</option></select></label>
-            <label>Shelf <select id="filter-shelf"><option value="">Any</option></select></label>
+            <label><span data-i18n="field.room.label">Room</span> <select id="filter-room"><option value="" data-i18n="filter.any">Any</option></select></label>
+            <label><span data-i18n="field.floor.label">Floor</span> <select id="filter-floor"><option value="" data-i18n="filter.any">Any</option></select></label>
+            <label><span data-i18n="field.column.label">Column</span> <select id="filter-column"><option value="" data-i18n="filter.any">Any</option></select></label>
+            <label><span data-i18n="field.shelf.label">Shelf</span> <select id="filter-shelf"><option value="" data-i18n="filter.any">Any</option></select></label>
           </div>
-          <button id="library-clear-btn" class="secondary">Clear filters</button>
+          <button id="library-clear-btn" class="secondary" data-i18n="library.clearFilters">Clear filters</button>
           <div class="library-toolbar">
             <div class="view-toggle">
-              <button id="library-view-grid-btn" class="view-toggle-btn active" title="Grid view">▦</button>
-              <button id="library-view-table-btn" class="view-toggle-btn" title="List view">☰</button>
+              <button id="library-view-grid-btn" class="view-toggle-btn active" title="Grid view" data-i18n-title="library.view.grid">▦</button>
+              <button id="library-view-table-btn" class="view-toggle-btn" title="List view" data-i18n-title="library.view.list">☰</button>
             </div>
-            <button id="library-export-btn" class="secondary">Export CSV</button>
+            <button id="library-export-btn" class="secondary" data-i18n="library.exportCsv">Export CSV</button>
           </div>
         </div>
 
         <div id="library-grid" class="book-grid">
-          <p class="empty">Loading...</p>
+          <p class="empty" data-i18n="common.loading">Loading...</p>
         </div>
         <div id="library-table-wrap" class="table-wrap hidden">
           <table id="library-table" class="book-table"></table>
@@ -123,11 +135,11 @@
       <!-- ================================= Ask AI ================================= -->
       <section class="view" id="view-ai">
         <div class="card">
-          <h2>Describe the book you're thinking of</h2>
-          <p class="hint">e.g. "the one with the sandworms and the desert planet" -- the AI turns
+          <h2 data-i18n="ai.title">Describe the book you're thinking of</h2>
+          <p class="hint" data-i18n="ai.hint">e.g. "the one with the sandworms and the desert planet" -- the AI turns
             your description into a search against your library's metadata sources.</p>
-          <textarea id="ai-description-input" rows="3" placeholder="Describe the book..."></textarea>
-          <button id="ai-search-btn">Ask AI</button>
+          <textarea id="ai-description-input" rows="3" placeholder="Describe the book..." data-i18n-placeholder="ai.placeholder"></textarea>
+          <button id="ai-search-btn" data-i18n="ai.button">Ask AI</button>
           <p class="status" id="ai-search-status"></p>
         </div>
         <div id="ai-results" class="book-grid"></div>
@@ -136,60 +148,89 @@
       <!-- =============================== Shelf Photo =============================== -->
       <section class="view" id="view-shelf">
         <div class="card">
-          <h2>Photograph a shelf</h2>
-          <p class="hint">Take (or upload) a photo of a shelf of book spines. OCR + metadata
+          <h2 data-i18n="shelf.title">Photograph a shelf</h2>
+          <p class="hint" data-i18n="shelf.hint">Take (or upload) a photo of a shelf of book spines. OCR + metadata
             lookup will guess titles/authors -- review and edit before saving.</p>
           <input id="shelf-photo-input" type="file" accept="image/*" capture="environment">
           <p class="status" id="shelf-photo-status"></p>
         </div>
         <div id="shelf-candidates"></div>
-        <button id="shelf-save-btn" class="hidden">Save selected</button>
+        <button id="shelf-save-btn" class="hidden" data-i18n="shelf.saveSelected">Save selected</button>
       </section>
 
       <!-- ================================ Settings ================================ -->
       <section class="view" id="view-settings">
         <div class="card">
-          <h2>Barcode scanner device exclusion</h2>
-          <p class="hint">
+          <h2 data-i18n="settings.prefs.title">Preferences</h2>
+          <div class="form-grid" style="display:grid; gap:0.6rem;">
+            <label><span data-i18n="settings.prefs.language">Language</span>
+              <select id="pref-language">
+                <option value="en">English</option>
+                <option value="it">Italiano</option>
+                <option value="de">Deutsch</option>
+                <option value="fr">Français</option>
+                <option value="es">Español</option>
+              </select>
+            </label>
+            <label><span data-i18n="settings.prefs.theme">Theme</span>
+              <div class="view-toggle">
+                <button type="button" id="pref-theme-dark-btn" class="view-toggle-btn" data-i18n="settings.prefs.theme.dark">Dark</button>
+                <button type="button" id="pref-theme-light-btn" class="view-toggle-btn" data-i18n="settings.prefs.theme.light">Light</button>
+              </div>
+            </label>
+            <label class="candidate-checkbox-row" style="font-size:0.9rem; color:var(--text);">
+              <input type="checkbox" id="pref-fetch-synopsis">
+              <span data-i18n="settings.prefs.fetchSynopsis">Fetch book synopsis automatically</span>
+            </label>
+            <p class="hint" data-i18n="settings.prefs.fetchSynopsis.hint">
+              When off, saving/looking up a book skips fetching its synopsis (faster) -- use the
+              "Fetch synopsis" button on a book's preview or detail view to get it on demand.
+            </p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2 data-i18n="settings.scanner.title">Barcode scanner device exclusion</h2>
+          <p class="hint" data-i18n="settings.scanner.hint1">
             The barcode scanner is read by a host-side service (<code>host/scanner_reader.py</code>),
             outside this app's container, since raw USB/Bluetooth HID input devices aren't reachable
             from inside it. That service watches every keyboard-like input device by default, which
             can pick up a real attached keyboard by mistake.
           </p>
-          <p class="hint">
+          <p class="hint" data-i18n="settings.scanner.hint2">
             To exclude a device, add a case-insensitive substring of its name to a plain JSON list at
             this path <strong>on the board's host OS</strong> (not inside this app's container):
           </p>
           <pre class="code-block">~/.config/techaq/excluded_devices.json</pre>
-          <p class="hint">Example contents:</p>
+          <p class="hint" data-i18n="settings.scanner.example">Example contents:</p>
           <pre class="code-block">["Logitech", "My Keyboard"]</pre>
-          <p class="hint">
+          <p class="hint" data-i18n="settings.scanner.hint3">
             This file is only read once, at startup -- after editing it, restart the scanner
             service on the board:
           </p>
           <pre class="code-block">systemctl --user restart techaq-scanner.service</pre>
-          <p class="hint">
+          <p class="hint" data-i18n="settings.scanner.hint4">
             This page is informational only for now; there's no in-app editor for this file yet
             since it lives outside this app's container filesystem.
           </p>
         </div>
 
         <div class="card">
-          <h2>Import / Export library (CSV)</h2>
-          <p class="hint">Export every book in the library as a CSV file, or import a CSV file of
+          <h2 data-i18n="settings.csv.title">Import / Export library (CSV)</h2>
+          <p class="hint" data-i18n="settings.csv.hint">Export every book in the library as a CSV file, or import a CSV file of
             books (matching that same export's column headers). Rows whose ISBN already matches a
             book already in the library are skipped rather than duplicated.</p>
-          <button id="settings-export-btn" class="secondary">Export full library (CSV)</button>
+          <button id="settings-export-btn" class="secondary" data-i18n="settings.csv.exportBtn">Export full library (CSV)</button>
           <div class="input-row" style="margin-top:0.75rem;">
             <input id="settings-import-input" type="file" accept=".csv,text/csv">
-            <button id="settings-import-btn">Import</button>
+            <button id="settings-import-btn" data-i18n="settings.csv.importBtn">Import</button>
           </div>
           <p class="status" id="settings-import-status"></p>
         </div>
 
         <div class="card">
-          <h2>About</h2>
-          <p class="hint">TechaQ -- a home book-collection inventory manager for the Arduino UNO Q.
+          <h2 data-i18n="settings.about.title">About</h2>
+          <p class="hint" data-i18n="settings.about.body">TechaQ -- a home book-collection inventory manager for the Arduino UNO Q.
             Scans EAN/ISBN barcodes, fetches metadata from Open Library / Google Books, tracks
             shelf location, and supports natural-language and shelf-photo (OCR) search/entry.</p>
         </div>
@@ -216,6 +257,7 @@
   </div>
 
   <script src="libs/socket.io.min.js"></script>
+  <script src="i18n.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

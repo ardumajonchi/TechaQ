@@ -64,6 +64,11 @@ and the systemd user service that runs `host/scanner_reader.py`.
 
 ### Settings
 
+- **Preferences** — pick the UI language (English, Italiano, Deutsch, Français, Español), switch
+  between the dark (default) and light theme, and choose whether scanning/looking up a book
+  fetches its synopsis automatically or leaves that for a manual "Fetch synopsis" button (shown
+  on a book's lookup preview and detail view whenever its description is still empty). All three
+  preferences are stored server-side, shared across every device viewing the app.
 - **Import / export the whole library as CSV** — export every book to a CSV file, or import a
   CSV of books in that same format; rows whose ISBN already matches a book already in the
   library are skipped rather than duplicated.
@@ -80,10 +85,20 @@ the same screen.
 - **Engine.** `python/engine/library.py` is the one real code path for every book operation —
   `python/main.py` (WebUI) and `python/cli.py` (terminal) both call into it, so behavior can
   never diverge between the two front ends.
-- **Metadata.** `python/engine/metadata.py` queries Open Library and Google Books concurrently
-  by ISBN, merging field-by-field (first non-empty value wins, longest description wins, cover
-  falls back Open Library → Google thumbnail); `search_by_title_author` backs both the
-  AI-describe and OCR-candidate-resolution flows. A Google Books API key is optional.
+- **Metadata.** `python/engine/metadata.py` queries four sources concurrently by ISBN — Open
+  Library, Google Books, and two national-library SRU catalogs (Deutsche Nationalbibliothek and
+  Bibliothèque nationale de France, sharing one Dublin-Core XML parsing helper) — merging
+  field-by-field (first non-empty value wins, longest description wins, cover falls back Open
+  Library → Google thumbnail); `source` reports which of the four actually hit. Fetching the
+  synopsis specifically is optional per-call (`include_description`), since Google Books is the
+  only source that ever has one — the Settings "fetch synopsis automatically" toggle controls the
+  default, and `fetch_description`/the manual "Fetch synopsis" button call Google Books alone.
+  `search_by_title_author` backs both the AI-describe and OCR-candidate-resolution flows. A
+  Google Books API key is optional.
+- **Settings.** `python/engine/settings.py`'s `SettingsStore` persists one shared row (fetch-
+  synopsis default, UI language, UI theme) in the same `techaq.db` SQLite file as the book table,
+  via the same `arduino:dbstorage_sqlstore` wrapper — settings are server-side and common to
+  every device viewing the app, not per-browser.
 - **AI describe-to-find.** `python/engine/ai_search.py` wraps the `arduino:llm` Brick with a
   single `search_books` tool that calls the real metadata search — the model can only propose
   search terms, never fabricate a result. Defensive construction throughout: a missing/broken
@@ -108,10 +123,22 @@ the same screen.
   delete/startup tones tuned for "IBM PC speaker" vibes, degrading to silent operation with no
   buzzer/MCU attached.
 - **Web UI.** `assets/` is a mobile-first responsive frontend served by the `arduino:web_ui`
-  Brick, with real-time scan/save toasts over its Socket.IO channel.
+  Brick, with real-time scan/save toasts over its Socket.IO channel. `assets/i18n.js` holds all
+  five languages' strings and the `applyTranslations()`/`t()` machinery; every static label uses
+  a `data-i18n*` attribute and every dynamic string (toasts, statuses) routes through `t()`. The
+  light theme is a `[data-theme="light"]` CSS-variable override block in `style.css` — every
+  other rule in the file already consumes those variables, so no other CSS changes were needed.
+- **Installable app icon.** `assets/icons/` (favicon, Apple touch icon, and 192/512px "any" +
+  "maskable" PNGs) plus `assets/manifest.json` mean "Add to Home Screen" on iOS, Android, and
+  desktop Chrome saves TechaQ with its own book icon instead of a browser-tab screenshot;
+  `index.html`'s `<link rel="manifest">`/`apple-touch-icon`/`theme-color` tags wire it up, and
+  `applyTheme()` in `app.js` flips the `theme-color` meta alongside the CSS variables so the
+  browser/status-bar chrome matches whichever theme is active.
 
 ## Tests
 
-`pytest` covers `engine/` (metadata merge logic, AI search grounding, OCR text-cleanup,
-library CRUD) with no hardware/network/LLM dependency — mocked HTTP and a stub LLM stand in
-for the real Bricks.
+`pytest` covers `engine/` (metadata merge logic across all four sources, settings persistence,
+AI search grounding, OCR text-cleanup, library CRUD) with no hardware/network/LLM dependency —
+mocked HTTP and a stub LLM stand in for the real Bricks. There's no frontend test harness (i18n,
+theming, and the Settings-UI wiring are verified live in-browser instead), consistent with how
+every other frontend feature in this app has been verified.

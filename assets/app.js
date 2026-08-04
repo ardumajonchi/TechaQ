@@ -11,6 +11,7 @@ let currentLocations = { room: [], floor: [], column: [], shelf: [] };
 let shelfCandidates = []; // enriched candidates currently shown in the Shelf Photo view
 let libraryViewMode = "grid"; // "grid" | "table" -- toggled in the Library view's search card
 let currentLibraryBooks = []; // last-loaded Library results, for CSV export
+let currentSettings = { fetch_synopsis_default: false, ui_language: "en", ui_theme: "dark" };
 
 // -- small helpers --------------------------------------------------------------------------
 
@@ -43,12 +44,12 @@ function escapeHtml(str) {
 }
 
 function formatAuthors(authors) {
-  return Array.isArray(authors) && authors.length ? authors.join(", ") : "Unknown author";
+  return Array.isArray(authors) && authors.length ? authors.join(", ") : t("js.book.unknownAuthor");
 }
 
 function formatLocation(book) {
   const parts = [book.room, book.floor, book.column, book.shelf].filter((p) => p);
-  return parts.length ? parts.join(" / ") : "No location set";
+  return parts.length ? parts.join(" / ") : t("js.book.noLocation");
 }
 
 function coverSrc(book) {
@@ -101,7 +102,7 @@ async function loadLocations() {
     if (select) {
       const previous = select.value;
       select.innerHTML =
-        `<option value="">Any</option>` +
+        `<option value="">${t("filter.any")}</option>` +
         values.map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
       if (values.includes(previous)) select.value = previous;
     }
@@ -120,12 +121,12 @@ function renderScanLogEntry(payload) {
   const time = new Date().toLocaleTimeString();
   if (payload.ok) {
     const book = payload.book || {};
-    li.innerHTML = `<span>${time}</span><span>Saved "<strong>${escapeHtml(book.title || payload.code)}</strong>" (${escapeHtml(payload.device || "scanner")})</span>`;
+    li.innerHTML = `<span>${time}</span><span>${t("js.scanLog.saved", { title: `<strong>${escapeHtml(book.title || payload.code)}</strong>`, device: escapeHtml(payload.device || t("js.scanner")) })}</span>`;
   } else {
-    li.innerHTML = `<span>${time}</span><span>Scanned <strong>${escapeHtml(payload.code)}</strong> -- not found, please enter manually</span>`;
+    li.innerHTML = `<span>${time}</span><span>${t("js.scanLog.notFound", { code: `<strong>${escapeHtml(payload.code)}</strong>` })}</span>`;
   }
   log.insertBefore(li, log.firstChild);
-  toast(payload.ok ? `Saved: ${payload.book?.title || payload.code}` : `Not found: ${payload.code}`, !payload.ok);
+  toast(payload.ok ? t("js.toast.saved", { title: payload.book?.title || payload.code }) : t("js.toast.notFound", { code: payload.code }), !payload.ok);
 }
 
 function setupScanSocket() {
@@ -139,32 +140,42 @@ function setupScanSocket() {
 function renderIsbnLookupResult(data) {
   const el = qs("#isbn-lookup-result");
   if (!data.found) {
-    el.innerHTML = `<p class="status error">No metadata found for that ISBN.</p>`;
+    el.innerHTML = `<p class="status error">${t("js.lookup.noMetadata")}</p>`;
     return;
   }
   const book = data.book;
   const cover = coverSrc(book);
+  const isbn = book.isbn13 || book.isbn10 || "";
   el.innerHTML = `
     <div class="book-card" style="cursor:default; flex-direction:row; align-items:center;">
       <div class="book-cover" style="width:60px; flex-shrink:0;">
         ${cover ? `<img src="${cover}" alt="">` : "📕"}
       </div>
       <div style="flex:1;">
-        <div class="book-title">${escapeHtml(book.title || "(untitled)")}</div>
+        <div class="book-title">${escapeHtml(book.title || t("js.book.untitled"))}</div>
         <div class="book-author">${escapeHtml(formatAuthors(book.authors))}</div>
       </div>
     </div>
-    <button id="isbn-lookup-save-btn">Save this book</button>
+    <label style="display:block; margin-top:0.6rem;">${t("js.synopsis.label")}
+      <textarea id="isbn-lookup-description" rows="3">${escapeHtml(book.description)}</textarea>
+    </label>
+    ${book.description ? "" : `<button type="button" class="secondary" id="isbn-lookup-fetch-synopsis-btn">${t("js.synopsis.button")}</button>`}
+    <button id="isbn-lookup-save-btn">${t("js.bookEdit.saveThisBook")}</button>
   `;
-  qs("#isbn-lookup-save-btn", el).addEventListener("click", async () => {
+  const descriptionEl = qs("#isbn-lookup-description", el);
+  const fetchBtn = qs("#isbn-lookup-fetch-synopsis-btn", el);
+  if (fetchBtn) {
+    fetchBtn.addEventListener("click", () => fetchSynopsisInto(isbn, descriptionEl, fetchBtn));
+  }
+  qs("#isbn-lookup-save-btn").addEventListener("click", async () => {
     try {
-      const saved = await apiSend("POST", "/api/books", book);
-      toast(`Saved: ${saved.title || "book"}`);
+      const saved = await apiSend("POST", "/api/books", { ...book, description: descriptionEl.value });
+      toast(t("js.toast.saved", { title: saved.title || t("js.book.untitled") }));
       el.innerHTML = "";
       qs("#isbn-lookup-input").value = "";
       loadLocations();
     } catch (exc) {
-      toast("Failed to save book", true);
+      toast(t("js.toast.failedSaveBook"), true);
     }
   });
 }
@@ -173,12 +184,12 @@ function setupIsbnLookup() {
   qs("#isbn-lookup-btn").addEventListener("click", async () => {
     const isbn = qs("#isbn-lookup-input").value.trim();
     if (!isbn) return;
-    qs("#isbn-lookup-result").innerHTML = `<p class="status">Looking up...</p>`;
+    qs("#isbn-lookup-result").innerHTML = `<p class="status">${t("js.lookup.looking")}</p>`;
     try {
       const data = await apiSend("POST", `/api/lookup/${encodeURIComponent(isbn)}`, {});
       renderIsbnLookupResult(data);
     } catch (exc) {
-      qs("#isbn-lookup-result").innerHTML = `<p class="status error">Lookup failed.</p>`;
+      qs("#isbn-lookup-result").innerHTML = `<p class="status error">${t("js.lookup.failed")}</p>`;
     }
   });
 }
@@ -205,7 +216,7 @@ function renderIsbnPhotoCandidates(candidates) {
 async function handleIsbnPhoto(file) {
   const status = qs("#isbn-photo-status");
   status.className = "status";
-  status.textContent = "Scanning photo for an ISBN...";
+  status.textContent = t("js.isbnPhoto.scanning");
   qs("#isbn-photo-candidates").innerHTML = "";
   try {
     const image_b64 = await fileToBase64(file);
@@ -213,18 +224,18 @@ async function handleIsbnPhoto(file) {
     const candidates = data.candidates || [];
     if (!candidates.length) {
       status.className = "status error";
-      status.textContent = "No ISBN-looking digits found in that photo.";
+      status.textContent = t("js.isbnPhoto.noneFound");
     } else if (candidates.length === 1) {
       qs("#isbn-lookup-input").value = candidates[0];
       status.className = "status success";
-      status.textContent = "Filled in from photo -- review, then Look up.";
+      status.textContent = t("js.isbnPhoto.filled");
     } else {
-      status.textContent = `Found ${candidates.length} possible codes -- pick one:`;
+      status.textContent = t("js.isbnPhoto.foundMultiple", { count: candidates.length });
       renderIsbnPhotoCandidates(candidates);
     }
   } catch (exc) {
     status.className = "status error";
-    status.textContent = "Failed to scan photo.";
+    status.textContent = t("js.isbnPhoto.failed");
   }
 }
 
@@ -267,17 +278,17 @@ function setupManualAddForm() {
     evt.preventDefault();
     const status = qs("#manual-add-status");
     status.className = "status";
-    status.textContent = "Saving...";
+    status.textContent = t("js.manualAdd.saving");
     try {
       const book = bookFromFormData(form);
       const saved = await apiSend("POST", "/api/books", book);
       status.className = "status success";
-      status.textContent = `Saved "${saved.title}".`;
+      status.textContent = t("js.manualAdd.saved", { title: saved.title });
       form.reset();
       loadLocations();
     } catch (exc) {
       status.className = "status error";
-      status.textContent = "Failed to save book.";
+      status.textContent = t("js.manualAdd.failed");
     }
   });
 }
@@ -286,7 +297,7 @@ function setupManualAddForm() {
 
 function renderBookGrid(container, books, { onClick } = {}) {
   if (!books.length) {
-    container.innerHTML = `<p class="empty">No books found.</p>`;
+    container.innerHTML = `<p class="empty">${t("js.library.noBooksFound")}</p>`;
     return;
   }
   container.innerHTML = "";
@@ -296,7 +307,7 @@ function renderBookGrid(container, books, { onClick } = {}) {
     card.className = "book-card";
     card.innerHTML = `
       <div class="book-cover">${cover ? `<img src="${cover}" alt="">` : "📕"}</div>
-      <div class="book-title">${escapeHtml(book.title || "(untitled)")}</div>
+      <div class="book-title">${escapeHtml(book.title || t("js.book.untitled"))}</div>
       <div class="book-author">${escapeHtml(formatAuthors(book.authors))}</div>
       <div class="book-location">${escapeHtml(formatLocation(book))}</div>
     `;
@@ -328,7 +339,7 @@ async function loadLibrary() {
     renderLibraryResults();
   } catch (exc) {
     currentLibraryBooks = [];
-    qs("#library-grid").innerHTML = `<p class="empty">Failed to load library.</p>`;
+    qs("#library-grid").innerHTML = `<p class="empty">${t("js.library.loadFailed")}</p>`;
     qs("#library-table").innerHTML = "";
   }
 }
@@ -349,7 +360,7 @@ function renderLibraryResults() {
 
 function renderBookTable(tableEl, books, { onClick } = {}) {
   if (!books.length) {
-    tableEl.innerHTML = `<tbody><tr><td class="empty">No books found.</td></tr></tbody>`;
+    tableEl.innerHTML = `<tbody><tr><td class="empty">${t("js.library.noBooksFound")}</td></tr></tbody>`;
     return;
   }
   const rows = books
@@ -358,7 +369,7 @@ function renderBookTable(tableEl, books, { onClick } = {}) {
       return `
         <tr data-id="${book.id}">
           <td class="table-cover">${cover ? `<img src="${cover}" alt="">` : "📕"}</td>
-          <td>${escapeHtml(book.title || "(untitled)")}</td>
+          <td>${escapeHtml(book.title || t("js.book.untitled"))}</td>
           <td>${escapeHtml(formatAuthors(book.authors))}</td>
           <td class="table-isbn">${escapeHtml(book.isbn13 || book.isbn10 || "")}</td>
           <td>${escapeHtml(formatLocation(book))}</td>
@@ -370,7 +381,7 @@ function renderBookTable(tableEl, books, { onClick } = {}) {
   tableEl.innerHTML = `
     <thead>
       <tr>
-        <th></th><th>Title</th><th>Authors</th><th class="table-isbn">ISBN</th><th>Location</th><th class="table-source">Source</th>
+        <th></th><th>${t("js.table.header.title")}</th><th>${t("js.table.header.authors")}</th><th class="table-isbn">${t("js.table.header.isbn")}</th><th>${t("js.table.header.location")}</th><th class="table-source">${t("js.table.header.source")}</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
@@ -449,7 +460,7 @@ function setupLibraryView() {
   });
   qs("#library-export-btn").addEventListener("click", () => {
     if (!currentLibraryBooks.length) {
-      toast("No results to export.", true);
+      toast(t("js.library.noResultsExport"), true);
       return;
     }
     downloadCsv("techaq-search-results.csv", booksToCsv(currentLibraryBooks));
@@ -467,59 +478,67 @@ function renderBookModalBody(book) {
     </div>
     <form id="book-edit-form" class="book-form">
       <div class="form-grid">
-        <label>Title <input name="title" value="${escapeHtml(book.title)}" required></label>
-        <label>Subtitle <input name="subtitle" value="${escapeHtml(book.subtitle)}"></label>
-        <label>Authors <input name="authors" value="${escapeHtml((book.authors || []).join(", "))}"></label>
-        <label>ISBN-13 <input name="isbn13" value="${escapeHtml(book.isbn13)}"></label>
-        <label>ISBN-10 <input name="isbn10" value="${escapeHtml(book.isbn10)}"></label>
-        <label>Publisher <input name="publisher" value="${escapeHtml(book.publisher)}"></label>
-        <label>Published date <input name="published_date" value="${escapeHtml(book.published_date)}"></label>
-        <label>Page count <input name="page_count" type="number" min="0" value="${book.page_count ?? ""}"></label>
-        <label>Language <input name="language" value="${escapeHtml(book.language)}"></label>
-        <label>Categories <input name="categories" value="${escapeHtml((book.categories || []).join(", "))}"></label>
-        <label class="span-2">Description <textarea name="description" rows="2">${escapeHtml(book.description)}</textarea></label>
-        <label>Room <input name="room" value="${escapeHtml(book.room)}" list="loc-room-options"></label>
-        <label>Floor <input name="floor" value="${escapeHtml(book.floor)}" list="loc-floor-options"></label>
-        <label>Column <input name="column" value="${escapeHtml(book.column)}" list="loc-column-options"></label>
-        <label>Shelf <input name="shelf" value="${escapeHtml(book.shelf)}" list="loc-shelf-options"></label>
-        <label class="span-2">Notes <textarea name="notes" rows="2">${escapeHtml(book.notes)}</textarea></label>
+        <label>${t("field.title.label")} <input name="title" value="${escapeHtml(book.title)}" required></label>
+        <label>${t("field.subtitle.label")} <input name="subtitle" value="${escapeHtml(book.subtitle)}"></label>
+        <label>${t("field.authors.label")} <input name="authors" value="${escapeHtml((book.authors || []).join(", "))}"></label>
+        <label>${t("field.isbn13.label")} <input name="isbn13" value="${escapeHtml(book.isbn13)}"></label>
+        <label>${t("field.isbn10.label")} <input name="isbn10" value="${escapeHtml(book.isbn10)}"></label>
+        <label>${t("field.publisher.label")} <input name="publisher" value="${escapeHtml(book.publisher)}"></label>
+        <label>${t("field.publishedDate.label")} <input name="published_date" value="${escapeHtml(book.published_date)}"></label>
+        <label>${t("field.pageCount.label")} <input name="page_count" type="number" min="0" value="${book.page_count ?? ""}"></label>
+        <label>${t("field.language.label")} <input name="language" value="${escapeHtml(book.language)}"></label>
+        <label>${t("field.categories.label")} <input name="categories" value="${escapeHtml((book.categories || []).join(", "))}"></label>
+        <label class="span-2">${t("field.description.label")} <textarea name="description" rows="2">${escapeHtml(book.description)}</textarea></label>
+        ${book.description ? "" : `<button type="button" class="secondary span-2" id="book-modal-fetch-synopsis-btn">${t("js.synopsis.button")}</button>`}
+        <label>${t("field.room.label")} <input name="room" value="${escapeHtml(book.room)}" list="loc-room-options"></label>
+        <label>${t("field.floor.label")} <input name="floor" value="${escapeHtml(book.floor)}" list="loc-floor-options"></label>
+        <label>${t("field.column.label")} <input name="column" value="${escapeHtml(book.column)}" list="loc-column-options"></label>
+        <label>${t("field.shelf.label")} <input name="shelf" value="${escapeHtml(book.shelf)}" list="loc-shelf-options"></label>
+        <label class="span-2">${t("field.notes.label")} <textarea name="notes" rows="2">${escapeHtml(book.notes)}</textarea></label>
       </div>
       <div style="display:flex; gap:0.5rem;">
-        <button type="submit">Save changes</button>
-        <button type="button" class="danger" id="book-delete-btn">Delete</button>
+        <button type="submit">${t("js.bookEdit.saveChanges")}</button>
+        <button type="button" class="danger" id="book-delete-btn">${t("js.bookEdit.delete")}</button>
       </div>
       <p class="status" id="book-edit-status"></p>
     </form>
   `;
 
+  const fetchSynopsisBtn = qs("#book-modal-fetch-synopsis-btn", body);
+  if (fetchSynopsisBtn) {
+    const isbn = book.isbn13 || book.isbn10 || "";
+    const descriptionEl = qs("#book-edit-form textarea[name=description]", body);
+    fetchSynopsisBtn.addEventListener("click", () => fetchSynopsisInto(isbn, descriptionEl, fetchSynopsisBtn));
+  }
+
   qs("#book-edit-form", body).addEventListener("submit", async (evt) => {
     evt.preventDefault();
     const status = qs("#book-edit-status", body);
     status.className = "status";
-    status.textContent = "Saving...";
+    status.textContent = t("js.bookEdit.saving");
     try {
       const updated = bookFromFormData(evt.target);
       updated.source = book.source || "manual";
       await apiSend("PUT", `/api/books/${book.id}`, updated);
       status.className = "status success";
-      status.textContent = "Saved.";
+      status.textContent = t("js.bookEdit.saved");
       loadLibrary();
       loadLocations();
     } catch (exc) {
       status.className = "status error";
-      status.textContent = "Failed to save.";
+      status.textContent = t("js.bookEdit.failed");
     }
   });
 
   qs("#book-delete-btn", body).addEventListener("click", async () => {
-    if (!confirm(`Delete "${book.title || "this book"}"?`)) return;
+    if (!confirm(t("js.bookEdit.confirmDelete", { title: book.title || t("js.book.untitled") }))) return;
     try {
       await apiSend("DELETE", `/api/books/${book.id}`, {});
       closeBookModal();
       loadLibrary();
-      toast("Book deleted.");
+      toast(t("js.bookEdit.deleted"));
     } catch (exc) {
-      toast("Failed to delete book", true);
+      toast(t("js.bookEdit.deleteFailed"), true);
     }
   });
 }
@@ -547,20 +566,20 @@ function setupAiSearch() {
     const results = qs("#ai-results");
     if (!description) return;
     status.className = "status";
-    status.textContent = "Asking AI...";
+    status.textContent = t("js.ai.asking");
     results.innerHTML = "";
     try {
       const data = await apiSend("POST", "/api/ai_search", { description });
       if (!data.available) {
         status.className = "status error";
-        status.textContent = "AI search is unavailable on this board.";
+        status.textContent = t("js.ai.unavailable");
         return;
       }
-      status.textContent = data.results.length ? `${data.results.length} result(s).` : "No matches found.";
+      status.textContent = data.results.length ? t("js.ai.results", { count: data.results.length }) : t("js.ai.noMatches");
       renderBookGrid(results, data.results, { onClick: openBookModal });
     } catch (exc) {
       status.className = "status error";
-      status.textContent = "AI search failed.";
+      status.textContent = t("js.ai.failed");
     }
   });
 }
@@ -600,17 +619,17 @@ function renderShelfCandidates() {
           <div class="candidate-fields">
             <div class="candidate-checkbox-row">
               <input type="checkbox" class="cand-selected" ${resolved ? "checked" : ""}>
-              <span>${resolved ? "Metadata match found -- review below" : "No metadata match -- edit and save manually"}</span>
+              <span>${resolved ? t("js.shelf.metadataFound") : t("js.shelf.noMatch")}</span>
             </div>
             <div class="row">
-              <input class="cand-title" placeholder="Title" value="${escapeHtml(resolved ? resolved.title : cand.title || "")}">
+              <input class="cand-title" placeholder="${t("field.title.label")}" value="${escapeHtml(resolved ? resolved.title : cand.title || "")}">
             </div>
             <div class="row">
-              <input class="cand-author" placeholder="Author" value="${escapeHtml(resolved ? formatAuthors(resolved.authors) : cand.author || "")}">
+              <input class="cand-author" placeholder="${t("js.shelf.authorPlaceholder")}" value="${escapeHtml(resolved ? formatAuthors(resolved.authors) : cand.author || "")}">
             </div>
             <div class="row">
-              <input class="cand-room" placeholder="Room" list="loc-room-options">
-              <input class="cand-shelf" placeholder="Shelf" list="loc-shelf-options">
+              <input class="cand-room" placeholder="${t("field.room.label")}" list="loc-room-options">
+              <input class="cand-shelf" placeholder="${t("field.shelf.label")}" list="loc-shelf-options">
             </div>
           </div>
         </div>
@@ -622,7 +641,7 @@ function renderShelfCandidates() {
 async function handleShelfPhoto(file) {
   const status = qs("#shelf-photo-status");
   status.className = "status";
-  status.textContent = "Processing photo (OCR + metadata lookup)...";
+  status.textContent = t("js.shelf.processing");
   shelfCandidates = [];
   renderShelfCandidates();
   try {
@@ -630,12 +649,12 @@ async function handleShelfPhoto(file) {
     const data = await apiSend("POST", "/api/shelf_photo", { image_b64 });
     shelfCandidates = data.candidates || [];
     status.textContent = shelfCandidates.length
-      ? `Found ${shelfCandidates.length} candidate(s) -- review and save below.`
-      : "No candidates recognized in that photo.";
+      ? t("js.shelf.foundCandidates", { count: shelfCandidates.length })
+      : t("js.shelf.noCandidates");
     renderShelfCandidates();
   } catch (exc) {
     status.className = "status error";
-    status.textContent = "Failed to process photo.";
+    status.textContent = t("js.shelf.failed");
   }
 }
 
@@ -663,21 +682,109 @@ function setupShelfPhoto() {
       });
     }
     if (!books.length) {
-      toast("No candidates selected.", true);
+      toast(t("js.shelf.noneSelected"), true);
       return;
     }
     try {
       const data = await apiSend("POST", "/api/shelf_photo/confirm", { books });
-      toast(`Saved ${data.ids.length} book(s).`);
+      toast(t("js.shelf.savedBooks", { count: data.ids.length }));
       shelfCandidates = [];
       renderShelfCandidates();
       qs("#shelf-photo-input").value = "";
       qs("#shelf-photo-status").textContent = "";
       loadLocations();
     } catch (exc) {
-      toast("Failed to save selected books.", true);
+      toast(t("js.shelf.saveFailed"), true);
     }
   });
+}
+
+// -- Settings: preferences (language, theme, synopsis default) ---------------------------------
+
+function applyTheme(theme) {
+  if (theme === "light") {
+    document.documentElement.dataset.theme = "light";
+  } else {
+    delete document.documentElement.dataset.theme;
+  }
+  qs("#pref-theme-dark-btn")?.classList.toggle("active", theme !== "light");
+  qs("#pref-theme-light-btn")?.classList.toggle("active", theme === "light");
+  const themeColorMeta = qs("#theme-color-meta");
+  if (themeColorMeta) themeColorMeta.content = theme === "light" ? "#f7f1e6" : "#14120f";
+}
+
+async function setupPreferences() {
+  try {
+    currentSettings = await apiGet("/api/settings");
+  } catch (exc) {
+    console.error("failed to load /api/settings", exc);
+  }
+
+  qs("#pref-language").value = currentSettings.ui_language;
+  qs("#pref-fetch-synopsis").checked = currentSettings.fetch_synopsis_default;
+  applyTheme(currentSettings.ui_theme);
+  if (typeof applyTranslations === "function") applyTranslations();
+
+  qs("#pref-language").addEventListener("change", async (evt) => {
+    const ui_language = evt.target.value;
+    try {
+      currentSettings = await apiSend("POST", "/api/settings", { ui_language });
+      if (typeof setCurrentLanguage === "function") setCurrentLanguage(currentSettings.ui_language);
+    } catch (exc) {
+      toast(t("js.prefs.langFailed"), true);
+    }
+  });
+
+  qs("#pref-theme-dark-btn").addEventListener("click", async () => {
+    try {
+      currentSettings = await apiSend("POST", "/api/settings", { ui_theme: "dark" });
+      applyTheme(currentSettings.ui_theme);
+    } catch (exc) {
+      toast(t("js.prefs.themeFailed"), true);
+    }
+  });
+
+  qs("#pref-theme-light-btn").addEventListener("click", async () => {
+    try {
+      currentSettings = await apiSend("POST", "/api/settings", { ui_theme: "light" });
+      applyTheme(currentSettings.ui_theme);
+    } catch (exc) {
+      toast(t("js.prefs.themeFailed"), true);
+    }
+  });
+
+  qs("#pref-fetch-synopsis").addEventListener("change", async (evt) => {
+    const fetch_synopsis_default = evt.target.checked;
+    try {
+      currentSettings = await apiSend("POST", "/api/settings", { fetch_synopsis_default });
+    } catch (exc) {
+      toast(t("js.prefs.synopsisFailed"), true);
+    }
+  });
+}
+
+// -- manual "fetch synopsis" button (shared by the ISBN-lookup preview and the book modal) ------
+
+async function fetchSynopsisInto(isbn, textareaEl, btnEl) {
+  if (!isbn) return;
+  btnEl.disabled = true;
+  const originalText = btnEl.textContent;
+  btnEl.textContent = t("js.synopsis.fetching");
+  try {
+    const data = await apiSend("POST", `/api/synopsis/${encodeURIComponent(isbn)}`, {});
+    if (data.description) {
+      textareaEl.value = data.description;
+      btnEl.remove();
+    } else {
+      toast(t("js.synopsis.noneFound"), true);
+      btnEl.disabled = false;
+      btnEl.textContent = originalText;
+    }
+  } catch (exc) {
+    toast(t("js.synopsis.fetchFailed"), true);
+    btnEl.disabled = false;
+    btnEl.textContent = originalText;
+  }
 }
 
 // -- Settings: full-library CSV import/export ---------------------------------------------------
@@ -688,7 +795,7 @@ function setupSettingsCsv() {
       const data = await apiGet("/api/books");
       downloadCsv("techaq-library.csv", booksToCsv(data.books || []));
     } catch (exc) {
-      toast("Failed to export library.", true);
+      toast(t("js.settingsCsv.exportFailed"), true);
     }
   });
 
@@ -698,22 +805,26 @@ function setupSettingsCsv() {
     const file = input.files[0];
     if (!file) {
       status.className = "status error";
-      status.textContent = "Choose a CSV file first.";
+      status.textContent = t("js.settingsCsv.chooseFile");
       return;
     }
     status.className = "status";
-    status.textContent = "Importing...";
+    status.textContent = t("js.settingsCsv.importing");
     try {
       const csvText = await file.text();
       const data = await apiSend("POST", "/api/import_csv", { csv: csvText });
       const errCount = (data.errors || []).length;
       status.className = errCount ? "status error" : "status success";
-      status.textContent = `Added ${data.added}, skipped ${data.skipped} (already in library)${errCount ? `, ${errCount} error(s)` : ""}.`;
+      status.textContent = t("js.settingsCsv.importResult", {
+        added: data.added,
+        skipped: data.skipped,
+        errPart: errCount ? t("js.settingsCsv.errPart", { count: errCount }) : "",
+      });
       input.value = "";
       loadLocations();
     } catch (exc) {
       status.className = "status error";
-      status.textContent = "Import failed.";
+      status.textContent = t("js.settingsCsv.importFailed");
     }
   });
 }
@@ -731,6 +842,7 @@ function main() {
   setupAiSearch();
   setupShelfPhoto();
   setupSettingsCsv();
+  setupPreferences();
   loadLocations();
 }
 

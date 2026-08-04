@@ -1,6 +1,9 @@
-/* TechaQ -- mobile-first responsive layout. Dark theme (matches this workspace's other App Lab
-   frontends -- progq, civitas-q), with a warm paper-ish accent since this is a book app rather
-   than a strategy game or calculator. Breakpoints: 600px (phone -> tablet), 900px (tablet ->
+/* TechaQ -- mobile-first responsive layout. Dark theme by default (matches this workspace's
+   other App Lab frontends -- progq, civitas-q), with a warm paper-ish accent since this is a
+   book app rather than a strategy game or calculator; a light "paper" theme is available via
+   [data-theme="light"] on <html>, selectable in Settings (see app.js's applyTheme()). Every
+   rule below consumes the --* custom properties from :root/[data-theme="light"], so the theme
+   swap needs no other CSS changes. Breakpoints: 600px (phone -> tablet), 900px (tablet ->
    desktop), per the brief. */
 
 :root {
@@ -15,6 +18,21 @@
   --accent-text: #1a1610;
   --danger: #c0392b;
   --success: #4a9d6a;
+  --radius: 10px;
+}
+
+[data-theme="light"] {
+  --bg: #f7f1e6;
+  --panel: #fffaf0;
+  --panel-alt: #efe4cf;
+  --border: #ddccab;
+  --text: #2b2418;
+  --text-dim: #7a6f5a;
+  --accent: #a9701e;
+  --accent-hover: #8f5c15;
+  --accent-text: #fffaf0;
+  --danger: #b3392b;
+  --success: #3d7d54;
   --radius: 10px;
 }
 

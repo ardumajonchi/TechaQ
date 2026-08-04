@@ -206,7 +206,7 @@ def test_add_by_isbn_found_saves_and_returns_book_with_id(library, monkeypatch):
 
     class FakeMetadata:
         @staticmethod
-        def fetch_by_isbn(isbn):
+        def fetch_by_isbn(isbn, include_description=False):
             assert isbn == "9781111111111"
             return found_book
 
@@ -223,7 +223,7 @@ def test_add_by_isbn_found_saves_and_returns_book_with_id(library, monkeypatch):
 def test_add_by_isbn_not_found_plays_error_and_returns_none(library, monkeypatch):
     class FakeMetadata:
         @staticmethod
-        def fetch_by_isbn(isbn):
+        def fetch_by_isbn(isbn, include_description=False):
             return None
 
     monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
@@ -242,7 +242,7 @@ def test_add_by_isbn_metadata_unavailable_returns_none(library, monkeypatch):
 def test_add_by_isbn_metadata_raises_is_caught(library, monkeypatch):
     class FakeMetadata:
         @staticmethod
-        def fetch_by_isbn(isbn):
+        def fetch_by_isbn(isbn, include_description=False):
             raise RuntimeError("network down")
 
     monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
@@ -256,7 +256,7 @@ def test_lookup_isbn_does_not_save(library, monkeypatch):
 
     class FakeMetadata:
         @staticmethod
-        def fetch_by_isbn(isbn):
+        def fetch_by_isbn(isbn, include_description=False):
             return found_book
 
     monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
@@ -269,6 +269,98 @@ def test_lookup_isbn_does_not_save(library, monkeypatch):
 def test_lookup_isbn_unavailable_returns_none(library, monkeypatch):
     monkeypatch.setattr(library_mod, "metadata", None)
     assert library.lookup_isbn("9782222222222") is None
+
+
+def test_add_by_isbn_passes_settings_fetch_synopsis_default(library, monkeypatch):
+    seen = {}
+
+    class FakeMetadata:
+        @staticmethod
+        def fetch_by_isbn(isbn, include_description=False):
+            seen["include_description"] = include_description
+            return make_book(title="Book", isbn13=isbn)
+
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
+
+    library.add_by_isbn("9781111111111")
+    assert seen["include_description"] is False
+
+    library.update_settings({"fetch_synopsis_default": True})
+    library.add_by_isbn("9781111111111")
+    assert seen["include_description"] is True
+
+
+def test_lookup_isbn_passes_settings_fetch_synopsis_default(library, monkeypatch):
+    seen = {}
+
+    class FakeMetadata:
+        @staticmethod
+        def fetch_by_isbn(isbn, include_description=False):
+            seen["include_description"] = include_description
+            return make_book(title="Book", isbn13=isbn)
+
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
+
+    library.update_settings({"fetch_synopsis_default": True})
+    library.lookup_isbn("9782222222222")
+    assert seen["include_description"] is True
+
+
+# ---------------------------------------------------------------------------
+# settings (get_settings / update_settings)
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_returns_defaults(library):
+    settings = library.get_settings()
+    assert settings == {
+        "fetch_synopsis_default": False,
+        "ui_language": "en",
+        "ui_theme": "dark",
+    }
+
+
+def test_update_settings_persists_partial_change(library):
+    result = library.update_settings({"ui_theme": "light"})
+    assert result["ui_theme"] == "light"
+    assert result["ui_language"] == "en"  # untouched
+    assert library.get_settings()["ui_theme"] == "light"
+
+
+def test_update_settings_rejects_unsupported_value(library):
+    with pytest.raises(ValueError):
+        library.update_settings({"ui_language": "klingon"})
+
+
+# ---------------------------------------------------------------------------
+# fetch_synopsis (manual synopsis-fetch button contract)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_synopsis_delegates_to_metadata(library, monkeypatch):
+    class FakeMetadata:
+        @staticmethod
+        def fetch_description(isbn):
+            assert isbn == "9781111111111"
+            return "A gripping tale."
+
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
+    assert library.fetch_synopsis("9781111111111") == "A gripping tale."
+
+
+def test_fetch_synopsis_metadata_unavailable_returns_empty_string(library, monkeypatch):
+    monkeypatch.setattr(library_mod, "metadata", None)
+    assert library.fetch_synopsis("9781111111111") == ""
+
+
+def test_fetch_synopsis_metadata_raises_is_caught(library, monkeypatch):
+    class FakeMetadata:
+        @staticmethod
+        def fetch_description(isbn):
+            raise RuntimeError("network down")
+
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
+    assert library.fetch_synopsis("9781111111111") == ""
 
 
 # ---------------------------------------------------------------------------

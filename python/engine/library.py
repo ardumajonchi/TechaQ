@@ -35,6 +35,7 @@ from dataclasses import asdict
 
 from .db import BookDB
 from .models import BookRecord
+from .settings import SettingsStore
 
 try:
     from . import metadata
@@ -98,6 +99,7 @@ class Library:
         ai_agent=None,
     ):
         self.db = db if db is not None else BookDB(db_name or DB_NAME)
+        self.settings = SettingsStore(db_name or DB_NAME)
 
         if hw is not None:
             self.hw = hw
@@ -126,6 +128,15 @@ class Library:
 
     def close(self) -> None:
         self.db.stop()
+        self.settings.stop()
+
+    # -- settings -------------------------------------------------------------------------------
+
+    def get_settings(self) -> dict:
+        return self.settings.get()
+
+    def update_settings(self, partial: dict) -> dict:
+        return self.settings.update(partial)
 
     # -- buzzer -------------------------------------------------------------------------------
 
@@ -159,7 +170,7 @@ class Library:
             self._buzz("play_error")
             return None
         try:
-            book = metadata.fetch_by_isbn(isbn)
+            book = metadata.fetch_by_isbn(isbn, include_description=self.settings.get()["fetch_synopsis_default"])
         except Exception as exc:
             print(f"[techaq] metadata.fetch_by_isbn({isbn!r}) failed: {exc!r}")
             book = None
@@ -175,10 +186,22 @@ class Library:
         if metadata is None:
             return None
         try:
-            return metadata.fetch_by_isbn(isbn)
+            return metadata.fetch_by_isbn(isbn, include_description=self.settings.get()["fetch_synopsis_default"])
         except Exception as exc:
             print(f"[techaq] metadata.fetch_by_isbn({isbn!r}) failed: {exc!r}")
             return None
+
+    def fetch_synopsis(self, isbn: str) -> str:
+        """Fetch only the synopsis for an ISBN, for the manual "fetch synopsis" button -- used
+        when the default lookup skipped it (see settings.fetch_synopsis_default). Degrades to ""
+        if metadata is unavailable or the fetch fails, never raises."""
+        if metadata is None:
+            return ""
+        try:
+            return metadata.fetch_description(isbn)
+        except Exception as exc:
+            print(f"[techaq] metadata.fetch_description({isbn!r}) failed: {exc!r}")
+            return ""
 
     def update_book(self, book_id: int, book: BookRecord) -> None:
         """Edits never carry cover bytes (there's no photo-upload UI for an edit, see main.py's
