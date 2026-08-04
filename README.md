@@ -115,7 +115,8 @@ the same screen.
   Brick degrades to "AI search unavailable" rather than crashing the app.
 - **Shelf-photo OCR.** `bricks/ocr_runtime/` is a custom Brick (own Dockerfile, root-built,
   `apt-get install tesseract-ocr`) exposing a small HTTP OCR service, following the same shape
-  as `scummvm-q`'s custom runtime Brick. `python/engine/ocr.py` preprocesses the image with
+  as `scummvm-q`'s custom runtime Brick — see [`bricks/ocr_runtime/README.md`](bricks/ocr_runtime/README.md)
+  for its full architecture and HTTP contract. `python/engine/ocr.py` preprocesses the image with
   Pillow, calls the service, and has the local LLM extract `{title, author}` candidates from
   the raw OCR text — explicitly allowed to say "unknown" rather than guess. The same
   preprocess/OCR pipeline backs photo-to-ISBN scanning, but pattern-matches digit runs instead
