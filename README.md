@@ -95,6 +95,16 @@ the same screen.
   default, and `fetch_description`/the manual "Fetch synopsis" button call Google Books alone.
   `search_by_title_author` backs both the AI-describe and OCR-candidate-resolution flows. A
   Google Books API key is optional.
+- **Web-search metadata fallback.** When all four catalog sources miss, `python/engine/
+  web_lookup.py`'s `WebMetadataFallback` scrapes a handful of DuckDuckGo Lite search-result
+  snippets for the ISBN and has the local LLM guess a `{title, author}` from them — never
+  inventing one, and only ever proposed, never trusted outright: `library.py` resolves the guess
+  against `search_by_title_author`'s real catalog search before it counts as a match, then
+  restores the originally-requested ISBN (not the matched edition's own) and tags `source` with
+  a `websearch+` prefix so it's visibly distinguishable from a direct catalog hit. No keyless web
+  search API tested proved reliable, so this is a best-effort last resort: it can still come up
+  empty on a given request (DuckDuckGo Lite intermittently bot-blocks scraping) and degrades to
+  today's plain "not found" behavior when it does, exactly like an outage on any other source.
 - **Settings.** `python/engine/settings.py`'s `SettingsStore` persists one shared row (fetch-
   synopsis default, UI language, UI theme) in the same `techaq.db` SQLite file as the book table,
   via the same `arduino:dbstorage_sqlstore` wrapper — settings are server-side and common to

@@ -6,12 +6,15 @@ handlers) and python/cli.py call into this module's `Library` class exclusively 
 is ever allowed to touch `BookDB`, `Hardware`, `metadata`, `ai_search`, or `ocr` directly, so
 there's exactly one place that decides what "add a book", "search", "delete", etc. actually mean.
 
-Three sibling modules are being built in parallel by teammates and may not exist yet, or may exist
-but fail to construct/run on a given board (no network, no LLM brick, tesseract missing, etc.):
+Sibling modules may not exist on a given board, or may exist but fail to construct/run (no
+network, no LLM brick, tesseract missing, etc.):
   - engine/metadata.py   -- fetch_by_isbn(isbn) -> BookRecord | None
                              search_by_title_author(title, author="") -> list[BookRecord]
   - engine/ai_search.py  -- class AISearchAgent with .available: bool and
                              .describe_to_find(description) -> list[BookRecord]
+  - engine/web_lookup.py -- class WebMetadataFallback with .available: bool and
+                             .lookup(isbn) -> dict of a web-search-derived {"title","author"}
+                             guess (NOT resolved yet -- see _web_fallback_lookup below)
   - engine/ocr.py        -- process_shelf_photo(image_bytes, llm=None) -> list[dict] of
                              {"title":..., "author":...} candidate guesses (NOT resolved yet)
   - hw.py (python/hw.py) -- class Hardware with play_scan/play_save/play_search/play_error/
@@ -48,6 +51,12 @@ try:
 except ImportError as exc:  # engine/ai_search.py not written yet, or failed to import
     AISearchAgent = None
     print(f"[techaq] engine.ai_search unavailable, AI describe-to-find disabled: {exc!r}")
+
+try:
+    from .web_lookup import WebMetadataFallback
+except ImportError as exc:  # engine/web_lookup.py not written yet, or failed to import
+    WebMetadataFallback = None
+    print(f"[techaq] engine.web_lookup unavailable, web metadata fallback disabled: {exc!r}")
 
 try:
     from . import ocr
@@ -97,6 +106,7 @@ class Library:
         db: BookDB | None = None,
         hw=None,
         ai_agent=None,
+        web_fallback=None,
     ):
         self.db = db if db is not None else BookDB(db_name or DB_NAME)
         self.settings = SettingsStore(db_name or DB_NAME)
@@ -122,6 +132,17 @@ class Library:
                 self.ai_agent = None
         else:
             self.ai_agent = None
+
+        if web_fallback is not None:
+            self.web_fallback = web_fallback
+        elif WebMetadataFallback is not None:
+            try:
+                self.web_fallback = WebMetadataFallback()
+            except Exception as exc:
+                print(f"[techaq] WebMetadataFallback init failed, web metadata fallback disabled: {exc!r}")
+                self.web_fallback = None
+        else:
+            self.web_fallback = None
 
         self.metadata_available = metadata is not None
         self.ocr_available = ocr is not None
@@ -175,6 +196,8 @@ class Library:
             print(f"[techaq] metadata.fetch_by_isbn({isbn!r}) failed: {exc!r}")
             book = None
         if book is None:
+            book = self._web_fallback_lookup(isbn)
+        if book is None:
             self._buzz("play_error")
             return None
         book_id = self.add_book(book)
@@ -186,10 +209,52 @@ class Library:
         if metadata is None:
             return None
         try:
-            return metadata.fetch_by_isbn(isbn, include_description=self.settings.get()["fetch_synopsis_default"])
+            book = metadata.fetch_by_isbn(isbn, include_description=self.settings.get()["fetch_synopsis_default"])
         except Exception as exc:
             print(f"[techaq] metadata.fetch_by_isbn({isbn!r}) failed: {exc!r}")
+            book = None
+        if book is None:
+            book = self._web_fallback_lookup(isbn)
+        return book
+
+    def _web_fallback_lookup(self, isbn: str) -> BookRecord | None:
+        """Last-resort step when every real catalog source in metadata.fetch_by_isbn missed:
+        ask WebMetadataFallback for a web-search-derived title/author guess, then resolve that
+        guess against metadata.search_by_title_author()'s real catalog search -- the guess is
+        never treated as a match on its own, only whatever that search actually finds. Returns
+        None if the fallback is unavailable, the scrape/LLM found nothing usable, or the guess
+        doesn't resolve to a real search hit. Never raises.
+        """
+        if self.web_fallback is None or not getattr(self.web_fallback, "available", False):
             return None
+        clean = metadata._clean_isbn(isbn) if metadata is not None else isbn
+        try:
+            guess = self.web_fallback.lookup(clean) or {}
+        except Exception as exc:
+            print(f"[techaq] WebMetadataFallback.lookup({isbn!r}) failed: {exc!r}")
+            return None
+        title = guess.get("title", "")
+        if not title or metadata is None:
+            return None
+        try:
+            matches = metadata.search_by_title_author(title, guess.get("author", ""))
+        except Exception as exc:
+            print(f"[techaq] metadata.search_by_title_author fallback lookup failed: {exc!r}")
+            matches = []
+        if not matches:
+            return None
+        match = matches[0]
+        # The matched edition's own ISBN isn't the barcode on the user's physical copy -- keep
+        # the originally-requested one so CSV-import/duplicate-detection stays consistent.
+        match.isbn13, match.isbn10 = "", ""
+        if len(clean) == 13:
+            match.isbn13 = clean
+        elif len(clean) == 10:
+            match.isbn10 = clean
+        else:
+            match.isbn13 = clean
+        match.source = f"websearch+{match.source}"
+        return match
 
     def fetch_synopsis(self, isbn: str) -> str:
         """Fetch only the synopsis for an ISBN, for the manual "fetch synopsis" button -- used

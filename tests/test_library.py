@@ -307,6 +307,135 @@ def test_lookup_isbn_passes_settings_fetch_synopsis_default(library, monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# add_by_isbn / lookup_isbn web-search fallback (last-resort step when
+# metadata.fetch_by_isbn misses every real catalog source)
+# ---------------------------------------------------------------------------
+
+
+class FakeWebFallback:
+    def __init__(self, available=True, guess=None):
+        self.available = available
+        self._guess = {} if guess is None else guess
+        self.lookup_calls = []
+
+    def lookup(self, isbn):
+        self.lookup_calls.append(isbn)
+        return self._guess
+
+
+class FakeMetadataMiss:
+    """fetch_by_isbn always misses (like every real source struck out), so add_by_isbn/
+    lookup_isbn fall through to web_fallback; search_by_title_author is the grounding step
+    the web guess must resolve against before ever counting as a match."""
+
+    resolved_matches: list = []
+    search_calls: list = []
+
+    @staticmethod
+    def fetch_by_isbn(isbn, include_description=False):
+        return None
+
+    @classmethod
+    def search_by_title_author(cls, title, author=""):
+        cls.search_calls.append((title, author))
+        return cls.resolved_matches
+
+    @staticmethod
+    def _clean_isbn(isbn):
+        return "".join(c for c in isbn if c.isdigit() or c.upper() == "X")
+
+
+def test_add_by_isbn_falls_back_to_web_search_when_metadata_misses(library, monkeypatch):
+    FakeMetadataMiss.resolved_matches = [make_book(title="Dune", isbn13="9999999999999", source="openlibrary")]
+    FakeMetadataMiss.search_calls = []
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadataMiss)
+    library.web_fallback = FakeWebFallback(available=True, guess={"title": "Dune", "author": "Frank Herbert"})
+
+    result = library.add_by_isbn("9780441172719")
+    assert result is not None
+    assert result.id is not None
+    assert result.title == "Dune"
+    # matched edition's own ISBN is discarded -- the originally-requested one is kept
+    assert result.isbn13 == "9780441172719"
+    assert result.source == "websearch+openlibrary"
+    assert FakeMetadataMiss.search_calls == [("Dune", "Frank Herbert")]
+    assert "play_save" in library.hw.calls
+
+
+def test_lookup_isbn_falls_back_to_web_search_when_metadata_misses(library, monkeypatch):
+    FakeMetadataMiss.resolved_matches = [make_book(title="Dune", isbn13="9999999999999", source="openlibrary")]
+    FakeMetadataMiss.search_calls = []
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadataMiss)
+    library.web_fallback = FakeWebFallback(available=True, guess={"title": "Dune", "author": "Frank Herbert"})
+
+    result = library.lookup_isbn("9780441172719")
+    assert result is not None
+    assert result.title == "Dune"
+    assert result.isbn13 == "9780441172719"
+    assert result.source == "websearch+openlibrary"
+    assert library.list_all_books() == []  # lookup_isbn never saves
+
+
+def test_add_by_isbn_web_fallback_no_guess_returns_none(library, monkeypatch):
+    FakeMetadataMiss.search_calls = []
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadataMiss)
+    library.web_fallback = FakeWebFallback(available=True, guess={})  # scrape/LLM found nothing
+
+    result = library.add_by_isbn("9780441172719")
+    assert result is None
+    assert "play_error" in library.hw.calls
+    assert FakeMetadataMiss.search_calls == []  # never even attempted a grounding search
+
+
+def test_add_by_isbn_web_fallback_unavailable_returns_none(library, monkeypatch):
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadataMiss)
+    fallback = FakeWebFallback(available=False, guess={"title": "Dune", "author": "Frank Herbert"})
+    library.web_fallback = fallback
+
+    result = library.add_by_isbn("9780441172719")
+    assert result is None
+    assert "play_error" in library.hw.calls
+    assert fallback.lookup_calls == []  # unavailable fallback is never even called
+
+
+def test_add_by_isbn_web_fallback_guess_does_not_resolve_returns_none(library, monkeypatch):
+    FakeMetadataMiss.resolved_matches = []  # guess doesn't resolve to any real catalog hit
+    FakeMetadataMiss.search_calls = []
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadataMiss)
+    library.web_fallback = FakeWebFallback(available=True, guess={"title": "Nonexistent Book", "author": ""})
+
+    result = library.add_by_isbn("9780441172719")
+    assert result is None
+    assert "play_error" in library.hw.calls
+
+
+def test_add_by_isbn_web_fallback_not_consulted_when_metadata_succeeds(library, monkeypatch):
+    found_book = make_book(title="Metadata Book", isbn13="9781111111111")
+
+    class FakeMetadata:
+        @staticmethod
+        def fetch_by_isbn(isbn, include_description=False):
+            return found_book
+
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
+    fallback = FakeWebFallback(available=True, guess={"title": "Should Not Be Used"})
+    library.web_fallback = fallback
+
+    result = library.add_by_isbn("9781111111111")
+    assert result.title == "Metadata Book"
+    assert fallback.lookup_calls == []
+
+
+def test_add_by_isbn_web_fallback_none_leaves_existing_behavior_unchanged(library, monkeypatch):
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadataMiss)
+    library.web_fallback = None
+
+    result = library.add_by_isbn("9780441172719")
+    assert result is None
+    assert "play_error" in library.hw.calls
+
+
+# ---------------------------------------------------------------------------
 # settings (get_settings / update_settings)
 # ---------------------------------------------------------------------------
 
