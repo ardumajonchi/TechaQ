@@ -35,6 +35,9 @@ SCHEMA = {
     "column": "TEXT",
     "shelf": "TEXT",
     "notes": "TEXT",
+    "is_read": "INTEGER",
+    "in_reading_list": "INTEGER",
+    "is_favorite": "INTEGER",
     "created_at": "TEXT",
     "updated_at": "TEXT",
 }
@@ -45,6 +48,16 @@ class BookDB:
         self._store = SQLStore(database_name)
         self._store.start()
         self._store.create_table(TABLE, SCHEMA)
+        self._ensure_columns()
+
+    def _ensure_columns(self) -> None:
+        """CREATE TABLE IF NOT EXISTS never adds columns to a table that already exists --
+        migrate any pre-existing `books` table (from before is_read/in_reading_list/is_favorite
+        existed) in place, so the on-device DB doesn't need to be dropped after this change."""
+        existing = {row["name"] for row in (self._store.execute_sql(f"PRAGMA table_info({TABLE})") or [])}
+        for column, sqltype in SCHEMA.items():
+            if column not in existing:
+                self._store.execute_sql(f"ALTER TABLE {TABLE} ADD COLUMN {column} {sqltype}")
 
     def stop(self) -> None:
         self._store.stop()
@@ -102,6 +115,10 @@ class BookDB:
         rows = self._store.execute_sql(
             f"SELECT * FROM {TABLE} {where} ORDER BY room, floor, column, shelf", tuple(args)
         )
+        return [BookRecord.from_row(r) for r in (rows or [])]
+
+    def list_favorites(self, order_by: str = "updated_at DESC") -> list[BookRecord]:
+        rows = self._store.execute_sql(f"SELECT * FROM {TABLE} WHERE is_favorite = 1 ORDER BY {order_by}")
         return [BookRecord.from_row(r) for r in (rows or [])]
 
     def distinct_locations(self) -> dict[str, list[str]]:

@@ -37,6 +37,9 @@ class BookRecord:
     column: str = ""
     shelf: str = ""
     notes: str = ""
+    is_read: bool = False
+    in_reading_list: bool = False
+    is_favorite: bool = False
     created_at: str = ""
     updated_at: str = ""
 
@@ -47,6 +50,8 @@ class BookRecord:
         row["categories"] = json.dumps(self.categories or [])
         if row["cover_image"] is None:
             row["cover_image"] = b""
+        for bool_field in ("is_read", "in_reading_list", "is_favorite"):
+            row[bool_field] = int(bool(row[bool_field]))
         row.pop("id", None)
         return row
 
@@ -63,6 +68,9 @@ class BookRecord:
                 data[list_field] = []
         cover = data.get("cover_image")
         data["cover_image"] = cover if cover else None
+        for bool_field in ("is_read", "in_reading_list", "is_favorite"):
+            if bool_field in data:
+                data[bool_field] = bool(data[bool_field])
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in data.items() if k in known})
 

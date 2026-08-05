@@ -41,16 +41,22 @@ and the systemd user service that runs `host/scanner_reader.py`.
   any HID-compliant scanner works, since they all enumerate as a keyboard and "type" the
   decoded digits. A scan POSTs to `/api/scan`, which looks up the code and auto-saves on a hit.
 - **Manual**: fill in the Add Book form yourself — every field a scan would populate is
-  editable, plus the four location fields.
+  editable, plus the four location fields and the read/reading-list/favorite checkboxes.
 - **Look up an ISBN**: type (or paste) an ISBN/EAN to preview its metadata before saving, or tap
   "Scan ISBN from photo" to photograph the barcode's printed digits instead of typing — the same
   `ocr_runtime` OCR pipeline reads the digits, offers up any plausible ISBN-looking candidates for
   you to pick, and fills the lookup field for you to confirm.
+- **Add by title/author**: for books with no barcode to scan (or that you don't have in hand),
+  search a public book catalog by title (and optionally author); each result is shown as a
+  candidate card you can save directly, with no ISBN required.
 - **Shelf photo**: capture or upload a photo of several book spines. TechaQ preprocesses the
   image (grayscale/contrast, tries multiple rotations since spines are usually vertical), OCRs
   it via the `ocr_runtime` Brick, and asks the local LLM to pull out title/author guesses. Each
   guess is resolved against real book-search results and shown to you for review — nothing is
   saved until you confirm which candidates are real.
+
+Every book also carries three checkboxes: **Read**, **Reading list**, and **Favorite** — set them
+when adding a book, or later from its detail view.
 
 ### Finding books
 
@@ -61,6 +67,10 @@ and the systemd user service that runs `host/scanner_reader.py`.
   returns real matches; it can never invent a book that doesn't exist in the search results.
 - **Grid or list view** — toggle the Library between a cover-art grid and a compact table, and
   export whatever's currently displayed (after a search or filter) as a CSV file.
+- **Desert Island** — a dedicated tab listing every book marked as a favorite, the ones you'd
+  take with you. It refreshes each time you open the tab, so favoriting/unfavoriting a book from
+  its detail view is reflected the next time you visit.
+
 
 ### Settings
 
@@ -85,6 +95,19 @@ the same screen.
 - **Engine.** `python/engine/library.py` is the one real code path for every book operation —
   `python/main.py` (WebUI) and `python/cli.py` (terminal) both call into it, so behavior can
   never diverge between the two front ends.
+- **Read/reading-list/favorite flags.** `is_read`, `in_reading_list`, and `is_favorite` are plain
+  booleans on `BookRecord`, stored as `INTEGER` columns (SQLite has no native boolean type, same
+  convention as `settings.py`'s `fetch_synopsis_default`). `BookDB` migrates any pre-existing
+  `books` table in place via `PRAGMA table_info` + `ALTER TABLE ... ADD COLUMN`, so upgrading
+  doesn't require dropping the on-device database.
+- **Add by title/author.** `Library.search_add` reuses the exact same `metadata.
+  search_by_title_author` catalog search that already backs AI-describe and OCR-candidate
+  resolution — no separate metadata code path. Results are unsaved candidates; saving one goes
+  through the normal `add_book`/`POST /api/books` path, identical to saving an ISBN-lookup
+  preview.
+- **Desert Island.** `Library.list_favorites` / `GET /api/books/favorites` filters the library
+  down to `is_favorite = 1`, rendered in its own tab with the same book-grid component the
+  Library view uses, so opening a book still goes through the normal edit modal.
 - **Metadata.** `python/engine/metadata.py` queries six sources concurrently by ISBN — Open
   Library, Google Books, two national-library SRU catalogs (Deutsche Nationalbibliothek and
   Bibliothèque nationale de France, sharing one Dublin-Core XML parsing helper), Italy's OPAC SBN

@@ -38,6 +38,9 @@
       <button class="tab-btn" data-view="shelf">
         <span class="tab-icon">🖼️</span><span class="tab-label" data-i18n="nav.shelf">Shelf Photo</span>
       </button>
+      <button class="tab-btn" data-view="desert-island">
+        <span class="tab-icon">🏝️</span><span class="tab-label" data-i18n="nav.desertIsland">Desert Island</span>
+      </button>
       <button class="tab-btn" data-view="settings">
         <span class="tab-icon">⚙️</span><span class="tab-label" data-i18n="nav.settings">Settings</span>
       </button>
@@ -73,6 +76,20 @@
         </div>
 
         <div class="card">
+          <h2 data-i18n="scan.searchAdd.title">Add by title/author</h2>
+          <p class="hint" data-i18n="scan.searchAdd.hint">Search a public book catalog by title (and optionally author) to add a book with no barcode to scan.</p>
+          <div class="input-row">
+            <input id="search-add-title-input" type="text" placeholder="Title, e.g. Dune" data-i18n-placeholder="scan.searchAdd.titlePlaceholder">
+          </div>
+          <div class="input-row">
+            <input id="search-add-author-input" type="text" placeholder="Author (optional)" data-i18n-placeholder="scan.searchAdd.authorPlaceholder">
+            <button id="search-add-btn" data-i18n="scan.searchAdd.button">Search</button>
+          </div>
+          <p class="status" id="search-add-status"></p>
+          <div id="search-add-results" class="book-grid"></div>
+        </div>
+
+        <div class="card">
           <h2 data-i18n="scan.manual.title">Manual entry</h2>
           <p class="hint" data-i18n="scan.manual.hint">Fallback for books with no barcode, or when metadata lookup fails.</p>
           <form id="manual-add-form" class="book-form">
@@ -93,6 +110,15 @@
               <label><span data-i18n="field.column.label">Column</span> <input name="column" list="loc-column-options"></label>
               <label><span data-i18n="field.shelf.label">Shelf</span> <input name="shelf" list="loc-shelf-options"></label>
               <label class="span-2"><span data-i18n="field.notes.label">Notes</span> <textarea name="notes" rows="2"></textarea></label>
+            </div>
+            <div class="candidate-checkbox-row">
+              <input type="checkbox" name="is_read"> <span data-i18n="field.isRead.label">Read</span>
+            </div>
+            <div class="candidate-checkbox-row">
+              <input type="checkbox" name="in_reading_list"> <span data-i18n="field.inReadingList.label">Reading list</span>
+            </div>
+            <div class="candidate-checkbox-row">
+              <input type="checkbox" name="is_favorite"> <span data-i18n="field.isFavorite.label">Favorite</span>
             </div>
             <button type="submit" data-i18n="scan.manual.save">Save book</button>
             <p class="status" id="manual-add-status"></p>
@@ -156,6 +182,17 @@
         </div>
         <div id="shelf-candidates"></div>
         <button id="shelf-save-btn" class="hidden" data-i18n="shelf.saveSelected">Save selected</button>
+      </section>
+
+      <!-- =============================== Desert Island =============================== -->
+      <section class="view" id="view-desert-island">
+        <div class="card">
+          <h2 data-i18n="desertIsland.title">Desert Island</h2>
+          <p class="hint" data-i18n="desertIsland.hint">Every book marked as a favorite -- the ones you'd take with you.</p>
+        </div>
+        <div id="desert-island-grid" class="book-grid">
+          <p class="empty" data-i18n="common.loading">Loading...</p>
+        </div>
       </section>
 
       <!-- ================================ Settings ================================ -->

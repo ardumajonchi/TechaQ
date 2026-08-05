@@ -402,6 +402,7 @@ button:disabled {
   justify-content: center;
   color: var(--text-dim);
   font-size: 1.8rem;
+  position: relative;
 }
 
 .book-cover img {
@@ -409,6 +410,20 @@ button:disabled {
   height: 100%;
   object-fit: cover;
 }
+
+.book-favorite-badge {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  font-size: 1rem;
+  color: gold;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.6);
+}
+
+.table-cover {
+  position: relative;
+}
+
 
 .book-title {
   font-size: 0.88rem;

@@ -14,6 +14,8 @@ REST API (all bodies/responses are JSON except the cover-image route, see below)
                                               ?q=<keyword>                        -- BookDB.search
                                               ?room=&floor=&column=&shelf=        -- BookDB.filter_by_location
                                             (any subset of the four location params may be given)
+  GET    /api/books/favorites          -- every book with is_favorite=true, for the "Desert
+                                            Island" view. Same shape as GET /api/books.
   GET    /api/books/{book_id}          -- one book, 404-shaped {"error": "not found"} if missing.
   POST   /api/books                    -- manual add. Body: BookIn (see below), same field names
                                             as BookRecord minus id/created_at/updated_at/cover_image,
@@ -40,6 +42,13 @@ REST API (all bodies/responses are JSON except the cover-image route, see below)
                                             {"available": bool, "results": [...]} -- `available`
                                             mirrors AISearchAgent.available so the frontend can
                                             show "AI unavailable" instead of an empty-results state.
+  POST   /api/search_add                -- body {"title": "...", "author": "..."}. Searches for a
+                                            book to add by title/author (not the existing library --
+                                            see /api/books?q= for that), via the same
+                                            metadata.search_by_title_author catalog search the AI
+                                            search / OCR flows already use. Returns
+                                            {"results": [...]} -- unsaved candidates (no id), each
+                                            saved individually via the normal POST /api/books.
   POST   /api/shelf_photo               -- body {"image_b64": "<base64-encoded image bytes, no
                                             data: URI prefix>"}. Runs OCR + metadata resolution,
                                             returns {"candidates": [...]} -- nothing is saved yet.
@@ -162,6 +171,9 @@ class BookIn(BaseModel):
     column: str = ""
     shelf: str = ""
     notes: str = ""
+    is_read: bool = False
+    in_reading_list: bool = False
+    is_favorite: bool = False
     # Only ever populated by the frontend re-POSTing a lookup_isbn()/book_to_dict() response
     # that carried a cover as a data: URI (no id yet to hang a /cover URL off) -- see
     # lookup_isbn()'s "save this book" flow in app.js. Never a real DB field; decoded below.
@@ -186,6 +198,11 @@ class ScanIn(BaseModel):
 
 class AISearchIn(BaseModel):
     description: str
+
+
+class SearchAddIn(BaseModel):
+    title: str
+    author: str = ""
 
 
 class ShelfPhotoIn(BaseModel):
@@ -253,6 +270,9 @@ def main():
     def get_locations():
         return library.distinct_locations()
 
+    def list_favorite_books():
+        return {"books": [book_to_dict(b) for b in library.list_favorites()]}
+
     # -- scanner integration --------------------------------------------------------------------
 
     def handle_scan(body: ScanIn):
@@ -290,6 +310,12 @@ def main():
         available = bool(library.ai_agent and getattr(library.ai_agent, "available", False))
         results = library.ai_describe_search(body.description) if available else []
         return {"available": available, "results": [book_to_dict(b) for b in results]}
+
+    # -- search-by-title/author add flow ---------------------------------------------------------
+
+    def search_add(body: SearchAddIn):
+        results = library.search_add(body.title, body.author)
+        return {"results": [book_to_dict(b, include_cover_data_uri=True) for b in results]}
 
     # -- shelf photo OCR ---------------------------------------------------------------------
 
@@ -333,6 +359,7 @@ def main():
         return {"description": library.fetch_synopsis(isbn)}
 
     ui.expose_api("GET", "/api/books", list_books)
+    ui.expose_api("GET", "/api/books/favorites", list_favorite_books)
     ui.expose_api("GET", "/api/books/{book_id}", get_book)
     ui.expose_api("POST", "/api/books", create_book)
     ui.expose_api("PUT", "/api/books/{book_id}", update_book)
@@ -343,6 +370,7 @@ def main():
     ui.expose_api("POST", "/api/lookup/{isbn}", lookup_isbn)
 
     ui.expose_api("POST", "/api/ai_search", ai_search)
+    ui.expose_api("POST", "/api/search_add", search_add)
 
     ui.expose_api("POST", "/api/shelf_photo", shelf_photo)
     ui.expose_api("POST", "/api/shelf_photo/confirm", shelf_photo_confirm)

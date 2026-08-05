@@ -15,7 +15,7 @@ Meant to be run from inside the running app container, e.g.:
 (exact container name/App Lab invocation to be confirmed against the hardware teammate's deploy
 docs -- see host/scanner_reader.py's README for how it locates the running container.)
 
-Subcommands: add-isbn, add-manual, search, list, list-location, ai-search, delete, show.
+Subcommands: add-isbn, add-manual, search, search-add, list, list-location, ai-search, delete, show.
 """
 
 from __future__ import annotations
@@ -95,6 +95,29 @@ def cmd_search(library, args) -> int:
     return 0
 
 
+def cmd_search_add(library, args) -> int:
+    results = library.search_add(args.title, args.author or "")
+    if not results:
+        print("No candidates found (or metadata lookup is unavailable).")
+        return 1
+    for i, book in enumerate(results, start=1):
+        print(f"{i}. {book.title or '(untitled)'} -- {', '.join(book.authors) or '(unknown author)'}")
+    choice = input("Save which number? (blank to skip): ").strip()
+    if not choice:
+        return 0
+    try:
+        idx = int(choice)
+        book = results[idx - 1]
+    except (ValueError, IndexError):
+        print(f"Invalid choice: {choice!r}", file=sys.stderr)
+        return 1
+    book_id = library.add_book(book)
+    book.id = book_id
+    print("Saved:")
+    print(_fmt_book(book))
+    return 0
+
+
 def cmd_list(library, args) -> int:
     _print_books(library.list_all_books())
     return 0
@@ -164,6 +187,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("search", help="Keyword search across title/subtitle/authors/description/notes")
     p.add_argument("keyword")
     p.set_defaults(func=cmd_search)
+
+    p = sub.add_parser("search-add", help="Search a title/author to add a NEW book (not the existing library)")
+    p.add_argument("title")
+    p.add_argument("--author", default="")
+    p.set_defaults(func=cmd_search_add)
 
     p = sub.add_parser("list", help="List every book")
     p.set_defaults(func=cmd_list)

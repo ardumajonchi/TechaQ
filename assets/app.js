@@ -86,6 +86,7 @@ function switchView(view) {
   qsa(".tab-btn").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === view));
   qsa(".view").forEach((sec) => sec.classList.toggle("active", sec.id === `view-${view}`));
   if (view === "library") loadLibrary();
+  if (view === "desert-island") loadDesertIsland();
 }
 
 // -- locations (autocomplete datalists + library filter dropdowns) ----------------------------
@@ -335,6 +336,10 @@ function bookFromFormData(form) {
     column: fd.get("column") || "",
     shelf: fd.get("shelf") || "",
     notes: fd.get("notes") || "",
+    // unchecked checkboxes don't reliably show up in FormData.get() -- read .checked directly
+    is_read: !!form.elements.is_read?.checked,
+    in_reading_list: !!form.elements.in_reading_list?.checked,
+    is_favorite: !!form.elements.is_favorite?.checked,
     source: "manual",
   };
 }
@@ -360,6 +365,61 @@ function setupManualAddForm() {
   });
 }
 
+// -- Search by title/author (add flow) -----------------------------------------------------------
+
+function renderSearchAddResults(results) {
+  const container = qs("#search-add-results");
+  if (!results.length) {
+    container.innerHTML = "";
+    return;
+  }
+  container.innerHTML = "";
+  for (const book of results) {
+    const cover = coverSrc(book);
+    const card = document.createElement("div");
+    card.className = "book-card";
+    card.innerHTML = `
+      <div class="book-cover">${cover ? `<img src="${cover}" alt="">` : "📕"}</div>
+      <div class="book-title">${escapeHtml(book.title || t("js.book.untitled"))}</div>
+      <div class="book-author">${escapeHtml(formatAuthors(book.authors))}</div>
+      <button type="button" class="secondary search-add-save-btn">${t("js.bookEdit.saveThisBook")}</button>
+    `;
+    qs(".search-add-save-btn", card).addEventListener("click", async () => {
+      try {
+        const saved = await apiSend("POST", "/api/books", book);
+        toast(t("js.toast.saved", { title: saved.title || t("js.book.untitled") }));
+        card.remove();
+        loadLocations();
+      } catch (exc) {
+        toast(t("js.toast.failedSaveBook"), true);
+      }
+    });
+    container.appendChild(card);
+  }
+}
+
+function setupSearchAdd() {
+  qs("#search-add-btn").addEventListener("click", async () => {
+    const title = qs("#search-add-title-input").value.trim();
+    const author = qs("#search-add-author-input").value.trim();
+    const status = qs("#search-add-status");
+    const results = qs("#search-add-results");
+    if (!title && !author) return;
+    status.className = "status";
+    status.textContent = t("js.searchAdd.searching");
+    results.innerHTML = "";
+    try {
+      const data = await apiSend("POST", "/api/search_add", { title, author });
+      const found = data.results || [];
+      status.textContent = found.length ? t("js.searchAdd.results", { count: found.length }) : t("js.searchAdd.noMatches");
+      renderSearchAddResults(found);
+    } catch (exc) {
+      status.className = "status error";
+      status.textContent = t("js.searchAdd.failed");
+    }
+  });
+}
+
 // -- Library view ------------------------------------------------------------------------------
 
 function renderBookGrid(container, books, { onClick } = {}) {
@@ -373,7 +433,7 @@ function renderBookGrid(container, books, { onClick } = {}) {
     const card = document.createElement("div");
     card.className = "book-card";
     card.innerHTML = `
-      <div class="book-cover">${cover ? `<img src="${cover}" alt="">` : "📕"}</div>
+      <div class="book-cover">${cover ? `<img src="${cover}" alt="">` : "📕"}${book.is_favorite ? `<span class="book-favorite-badge">★</span>` : ""}</div>
       <div class="book-title">${escapeHtml(book.title || t("js.book.untitled"))}</div>
       <div class="book-author">${escapeHtml(formatAuthors(book.authors))}</div>
       <div class="book-location">${escapeHtml(formatLocation(book))}</div>
@@ -435,7 +495,7 @@ function renderBookTable(tableEl, books, { onClick } = {}) {
       const cover = coverSrc(book);
       return `
         <tr data-id="${book.id}">
-          <td class="table-cover">${cover ? `<img src="${cover}" alt="">` : "📕"}</td>
+          <td class="table-cover">${cover ? `<img src="${cover}" alt="">` : "📕"}${book.is_favorite ? `<span class="book-favorite-badge">★</span>` : ""}</td>
           <td>${escapeHtml(book.title || t("js.book.untitled"))}</td>
           <td>${escapeHtml(formatAuthors(book.authors))}</td>
           <td class="table-isbn">${escapeHtml(book.isbn13 || book.isbn10 || "")}</td>
@@ -465,6 +525,7 @@ const CSV_EXPORT_FIELDS = [
   "title", "subtitle", "authors", "isbn13", "isbn10", "publisher", "published_date",
   "description", "page_count", "categories", "language", "source",
   "room", "floor", "column", "shelf", "notes",
+  "is_read", "in_reading_list", "is_favorite",
 ];
 
 function csvEscape(value) {
@@ -563,6 +624,15 @@ function renderBookModalBody(book) {
         <label>${t("field.shelf.label")} <input name="shelf" value="${escapeHtml(book.shelf)}" list="loc-shelf-options"></label>
         <label class="span-2">${t("field.notes.label")} <textarea name="notes" rows="2">${escapeHtml(book.notes)}</textarea></label>
       </div>
+      <div class="candidate-checkbox-row">
+        <input type="checkbox" name="is_read" ${book.is_read ? "checked" : ""}> <span>${t("field.isRead.label")}</span>
+      </div>
+      <div class="candidate-checkbox-row">
+        <input type="checkbox" name="in_reading_list" ${book.in_reading_list ? "checked" : ""}> <span>${t("field.inReadingList.label")}</span>
+      </div>
+      <div class="candidate-checkbox-row">
+        <input type="checkbox" name="is_favorite" ${book.is_favorite ? "checked" : ""}> <span>${t("field.isFavorite.label")}</span>
+      </div>
       <div style="display:flex; gap:0.5rem;">
         <button type="submit">${t("js.bookEdit.saveChanges")}</button>
         <button type="button" class="danger" id="book-delete-btn">${t("js.bookEdit.delete")}</button>
@@ -622,6 +692,18 @@ function closeBookModal() {
 function setupModal() {
   qs("#book-modal-close").addEventListener("click", closeBookModal);
   qs(".modal-backdrop", qs("#book-modal")).addEventListener("click", closeBookModal);
+}
+
+// -- Desert Island view (favorites) --------------------------------------------------------------
+
+async function loadDesertIsland() {
+  const container = qs("#desert-island-grid");
+  try {
+    const data = await apiGet("/api/books/favorites");
+    renderBookGrid(container, data.books || [], { onClick: openBookModal });
+  } catch (exc) {
+    container.innerHTML = `<p class="empty">${t("js.library.loadFailed")}</p>`;
+  }
 }
 
 // -- Ask AI view --------------------------------------------------------------------------------
@@ -904,6 +986,7 @@ function main() {
   setupIsbnLookup();
   setupIsbnPhoto();
   setupManualAddForm();
+  setupSearchAdd();
   setupLibraryView();
   setupModal();
   setupAiSearch();

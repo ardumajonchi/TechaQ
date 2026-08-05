@@ -21,6 +21,8 @@ from engine.db import BookDB
 from engine.library import Library, book_to_dict
 from engine.models import BookRecord
 
+from arduino.app_bricks.dbstorage_sqlstore import SQLStore
+
 
 class FakeHardware:
     """Records which play_* methods were called, instead of touching a real Bridge/MCU."""
@@ -828,3 +830,141 @@ def test_library_construction_without_hardware_or_ai_agent_still_works(db_path):
         assert lib.ai_describe_search("anything") == []
     finally:
         lib.close()
+
+
+# ---------------------------------------------------------------------------
+# is_read / in_reading_list / is_favorite boolean fields
+# ---------------------------------------------------------------------------
+
+
+def test_boolean_fields_default_false_and_round_trip(library):
+    book_id = library.add_book(make_book())
+    book = library.get_book(book_id)
+    assert book.is_read is False
+    assert book.in_reading_list is False
+    assert book.is_favorite is False
+
+
+def test_boolean_fields_persist_true_through_add_and_update(library):
+    book_id = library.add_book(make_book(is_read=True, in_reading_list=True, is_favorite=True))
+    book = library.get_book(book_id)
+    assert book.is_read is True
+    assert book.in_reading_list is True
+    assert book.is_favorite is True
+
+    book.is_favorite = False
+    library.update_book(book_id, book)
+    updated = library.get_book(book_id)
+    assert updated.is_favorite is False
+    assert updated.is_read is True  # untouched fields survive the update
+
+
+def test_ensure_columns_migrates_a_pre_existing_table_missing_the_new_columns(db_path):
+    """Simulate an on-device DB created before is_read/in_reading_list/is_favorite existed --
+    BookDB's _ensure_columns() migration must add them without dropping existing data."""
+    from engine.db import TABLE
+    old_schema = {
+        "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+        "isbn13": "TEXT",
+        "title": "TEXT",
+        "authors": "TEXT",
+        "created_at": "TEXT",
+        "updated_at": "TEXT",
+    }
+    old_store = SQLStore(db_path)
+    old_store.start()
+    old_store.create_table(TABLE, old_schema)
+    old_store.execute_sql(
+        f"INSERT INTO {TABLE} (isbn13, title, authors) VALUES (?, ?, ?)",
+        ("9780441013593", "Dune", "[]"),
+    )
+    old_store.stop()
+
+    db = BookDB(db_path)
+    try:
+        books = db.list_all()
+        assert len(books) == 1
+        assert books[0].title == "Dune"  # pre-existing row survived the migration
+        assert books[0].is_read is False
+        assert books[0].is_favorite is False
+    finally:
+        db.stop()
+
+
+def test_import_csv_coerces_boolean_columns(library):
+    csv_text = (
+        "title,is_read,in_reading_list,is_favorite\n"
+        "Read And Favorite,true,0,1\n"
+        "Neither,false,,\n"
+    )
+    library.import_csv(csv_text)
+    books = {b.title: b for b in library.list_all_books()}
+    assert books["Read And Favorite"].is_read is True
+    assert books["Read And Favorite"].in_reading_list is False
+    assert books["Read And Favorite"].is_favorite is True
+    assert books["Neither"].is_read is False
+    assert books["Neither"].is_favorite is False
+
+
+# ---------------------------------------------------------------------------
+# list_favorites / "Desert Island"
+# ---------------------------------------------------------------------------
+
+
+def test_list_favorites_returns_only_favorited_books(library):
+    library.add_book(make_book(title="Favorite One", isbn13="9781111111111", is_favorite=True))
+    library.add_book(make_book(title="Not Favorite", isbn13="9782222222222", is_favorite=False))
+    library.add_book(make_book(title="Favorite Two", isbn13="9783333333333", is_favorite=True))
+
+    favorites = library.list_favorites()
+    assert {b.title for b in favorites} == {"Favorite One", "Favorite Two"}
+
+
+def test_list_favorites_empty_when_none_favorited(library):
+    library.add_book(make_book())
+    assert library.list_favorites() == []
+
+
+# ---------------------------------------------------------------------------
+# search_add (search-by-title/author add flow)
+# ---------------------------------------------------------------------------
+
+
+def test_search_add_delegates_to_metadata_search_by_title_author(library, monkeypatch):
+    found = [make_book(title="Dune", isbn13="9780441013593")]
+
+    class FakeMetadata:
+        @staticmethod
+        def search_by_title_author(title, author=""):
+            assert title == "Dune"
+            assert author == "Frank Herbert"
+            return found
+
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
+    results = library.search_add("Dune", "Frank Herbert")
+    assert results == found
+
+
+def test_search_add_metadata_unavailable_returns_empty_list(library, monkeypatch):
+    monkeypatch.setattr(library_mod, "metadata", None)
+    assert library.search_add("Dune", "Frank Herbert") == []
+
+
+def test_search_add_blank_query_returns_empty_list(library, monkeypatch):
+    class FakeMetadata:
+        @staticmethod
+        def search_by_title_author(title, author=""):
+            raise AssertionError("should never be called for a blank query")
+
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
+    assert library.search_add("", "") == []
+
+
+def test_search_add_metadata_raises_is_caught(library, monkeypatch):
+    class FakeMetadata:
+        @staticmethod
+        def search_by_title_author(title, author=""):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
+    assert library.search_add("Dune", "") == []

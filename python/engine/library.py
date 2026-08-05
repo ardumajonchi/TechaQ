@@ -351,6 +351,26 @@ class Library:
     def distinct_locations(self) -> dict[str, list[str]]:
         return self.db.distinct_locations()
 
+    def list_favorites(self) -> list[BookRecord]:
+        return self.db.list_favorites()
+
+    # -- search-by-title/author add flow ---------------------------------------------------------
+
+    def search_add(self, title: str, author: str = "") -> list[BookRecord]:
+        """Search for a book to add by title/author (as opposed to search_books(), which searches
+        the EXISTING library) -- reuses metadata.search_by_title_author's real catalog search, the
+        same function the AI-describe and OCR-candidate-resolution flows already rely on. Results
+        are unsaved candidates (book.id is None); saving one goes through the normal add_book()/
+        POST /api/books path, unchanged. Returns [] if metadata is unavailable, the query is
+        blank, or the search fails. Never raises."""
+        if metadata is None or not (title or author).strip():
+            return []
+        try:
+            return metadata.search_by_title_author(title, author) or []
+        except Exception as exc:
+            print(f"[techaq] metadata.search_by_title_author({title!r}, {author!r}) failed: {exc!r}")
+            return []
+
     # -- AI describe-to-find ---------------------------------------------------------------------
 
     def ai_describe_search(self, description: str) -> list[BookRecord]:
@@ -461,6 +481,8 @@ class Library:
                         values[field] = [v.strip() for v in raw.split(";") if v.strip()] if raw else []
                     elif field == "page_count":
                         values[field] = int(raw) if raw else None
+                    elif field in ("is_read", "in_reading_list", "is_favorite"):
+                        values[field] = raw.strip().lower() in ("1", "true", "yes")
                     else:
                         values[field] = raw
                 book = BookRecord(**values)
