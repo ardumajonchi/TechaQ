@@ -994,7 +994,7 @@ function applyTheme(theme) {
   qs("#pref-theme-day1-btn")?.classList.toggle("active", theme === "day1");
   const themeColorMeta = qs("#theme-color-meta");
   if (themeColorMeta) {
-    const colors = { light: "#f7f1e6", day1: "#232f3e" };
+    const colors = { light: "#f7f1e6", day1: "#146b8c" };
     themeColorMeta.content = colors[theme] || "#14120f";
   }
 }

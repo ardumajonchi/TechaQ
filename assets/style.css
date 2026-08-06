@@ -36,8 +36,9 @@
   --radius: 10px;
 }
 
-/* "Day1" -- an Amazon.com-circa-2005 pastiche: white panels, boxy blue-grey borders, black text,
-   bright orange accent buttons with black (not white) label text, era-accurate. */
+/* "Day1" -- an Amazon.com-circa-2001 pastiche: white panels, square (not rounded) blue-grey
+   boxy borders, black body text in Verdana, classic underlined blue links, and a solid teal
+   nav bar under a plain white logo row -- era-accurate down to the font, not just the palette. */
 [data-theme="day1"] {
   --bg: #ffffff;
   --panel: #ffffff;
@@ -50,7 +51,7 @@
   --accent-text: #111111;
   --danger: #cc0c39;
   --success: #007600;
-  --radius: 4px;
+  --radius: 0px;
 }
 
 * {
@@ -824,38 +825,71 @@ details.collapsible[open] > summary {
   animation: lookup-spin 0.7s linear infinite;
 }
 
-/* -- Day1-only cosmetic exceptions -- the one deliberate departure from "every rule consumes the
-   shared variables"; scoped strictly to this theme so dark/light are unaffected. */
+/* -- Day1-only cosmetic exceptions -- amazon.com circa 2001 had a distinct visual language that
+   the shared CSS-variable palette alone can't express: Verdana body copy, perfectly square
+   (never rounded) boxes, a plain white logo row sitting above a solid teal nav band, and flat
+   (not glossy/gradient) buttons. Scoped strictly under [data-theme="day1"] so dark/light are
+   unaffected; the blanket border-radius reset is the one deliberate !important in this file. */
 
-[data-theme="day1"] #topbar,
-[data-theme="day1"] #tabbar {
-  background: #232f3e;
-  color: #ffffff;
-  border-bottom: 3px solid var(--accent);
+[data-theme="day1"] {
+  font-family: Verdana, Geneva, Arial, sans-serif;
+}
+
+[data-theme="day1"] * {
+  border-radius: 0 !important;
+}
+
+[data-theme="day1"] #topbar {
+  background: #ffffff;
+  color: #000000;
+  border-bottom: 1px solid var(--border);
 }
 
 [data-theme="day1"] #topbar .tagline {
-  color: #cccccc;
+  color: var(--text-dim);
+}
+
+[data-theme="day1"] #tabbar {
+  background: #146b8c;
+  border-top: none;
+  border-bottom: 4px solid #0a4c63;
 }
 
 [data-theme="day1"] .tab-btn {
   color: #ffffff;
 }
 
-[data-theme="day1"] .tab-btn.active,
+[data-theme="day1"] .tab-btn.active {
+  color: #146b8c;
+  background: #ffffff;
+}
+
 [data-theme="day1"] .tab-btn:hover {
-  color: var(--accent);
-  background: rgba(255, 255, 255, 0.08);
+  color: #ffe0a3;
+  background: #1f88ac;
+}
+
+[data-theme="day1"] .card,
+[data-theme="day1"] .book-card,
+[data-theme="day1"] .modal-content,
+[data-theme="day1"] .table-wrap,
+[data-theme="day1"] input, [data-theme="day1"] select, [data-theme="day1"] textarea {
+  border-width: 1px;
+}
+
+[data-theme="day1"] .card h2 {
+  color: #0a4c63;
 }
 
 [data-theme="day1"] button {
-  background: linear-gradient(#f7dfa5, #f0c14b);
-  border: 1px solid #a77d28;
+  background: var(--accent);
+  border: 1px solid #94620b;
   color: #111111;
+  font-weight: bold;
 }
 
 [data-theme="day1"] button:hover {
-  background: linear-gradient(#f5d78e, #eeb933);
+  background: var(--accent-hover);
 }
 
 [data-theme="day1"] button.secondary {
@@ -868,6 +902,12 @@ details.collapsible[open] > summary {
   background: var(--danger);
   border: 1px solid var(--danger);
   color: #fff;
+}
+
+[data-theme="day1"] .view-toggle-btn.active {
+  background: #146b8c;
+  border-color: #146b8c;
+  color: #ffffff;
 }
 
 /* ================================================================================================

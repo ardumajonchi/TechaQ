@@ -86,7 +86,8 @@ pull-to-refresh of that view's data.
 
 - **Preferences** — pick the UI language (English, Italiano, Deutsch, Français, Español), switch
   between the dark (default), light, and "Day1" themes (the last one a pastiche of amazon.com
-  circa 2005 — navy header, orange gradient buttons, boxy borders), and choose whether
+  circa 2001 — white page with a solid teal nav bar, square boxy borders, Verdana type, and flat
+  orange buttons), and choose whether
   scanning/looking up a book fetches its synopsis automatically or leaves that for a manual
   "Fetch synopsis" button (shown on a book's lookup preview and detail view whenever its
   description is still empty). All these preferences are stored server-side, shared across every
@@ -194,10 +195,11 @@ the same screen.
   five languages' strings and the `applyTranslations()`/`t()` machinery; every static label uses
   a `data-i18n*` attribute and every dynamic string (toasts, statuses) routes through `t()`. The
   light theme is a `[data-theme="light"]` CSS-variable override block in `style.css`, and the
-  "Day1" theme (an amazon.com-circa-2005 pastiche) is a second such block — every other rule in
-  the file already consumes those variables, so no other CSS changes were needed beyond a couple
-  of Day1-only cosmetic exceptions (navy topbar/tabbar, gradient buttons) scoped strictly under
-  `[data-theme="day1"]` and called out as such in a comment.
+  "Day1" theme (an amazon.com-circa-2001 pastiche) is a second such block — every other rule in
+  the file already consumes those variables, so no other CSS changes were needed beyond a set
+  of Day1-only cosmetic exceptions (a Verdana font override, a flat-square `border-radius: 0`
+  reset, the white-logo-row-over-teal-navbar chrome, and flat rather than glossy buttons) scoped
+  strictly under `[data-theme="day1"]` and called out as such in a comment.
 - **Live ISBN lookup status.** An "Look up an ISBN" preview no longer just shows a static
   "Looking up..." message: `engine/metadata.py`'s `fetch_by_isbn` reports each of its six
   concurrent catalog fetches (Open Library, Google Books, DNB, BNF, OPAC SBN, isbnsearch.org) the
