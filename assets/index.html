@@ -50,17 +50,17 @@
 
       <!-- ============================== Scan / Add ============================== -->
       <section class="view active" id="view-scan">
-        <div class="card">
-          <h2 data-i18n="scan.recent.title">Recent scans</h2>
+        <details class="card collapsible" open>
+          <summary><h2 data-i18n="scan.recent.title">Recent scans</h2></summary>
           <p class="hint" data-i18n="scan.recent.hint">Live feed from a connected USB/Bluetooth barcode scanner. Scanning an
             ISBN/EAN auto-saves the book if metadata is found.</p>
           <ul id="scan-log" class="log-list">
             <li class="empty" data-i18n="scan.recent.empty">No scans yet. Scan a barcode, or look one up below.</li>
           </ul>
-        </div>
+        </details>
 
-        <div class="card">
-          <h2 data-i18n="scan.lookup.title">Look up an ISBN</h2>
+        <details class="card collapsible" open>
+          <summary><h2 data-i18n="scan.lookup.title">Look up an ISBN</h2></summary>
           <p class="hint" data-i18n="scan.lookup.hint">Preview a book's metadata before saving it.</p>
           <div class="input-row">
             <input id="isbn-lookup-input" type="text" inputmode="numeric" placeholder="ISBN or EAN, e.g. 9780134685991" data-i18n-placeholder="scan.lookup.placeholder">
@@ -73,10 +73,10 @@
           <p class="status" id="isbn-photo-status"></p>
           <div id="isbn-photo-candidates"></div>
           <div id="isbn-lookup-result"></div>
-        </div>
+        </details>
 
-        <div class="card">
-          <h2 data-i18n="scan.searchAdd.title">Add by title/author</h2>
+        <details class="card collapsible" open>
+          <summary><h2 data-i18n="scan.searchAdd.title">Add by title/author</h2></summary>
           <p class="hint" data-i18n="scan.searchAdd.hint">Search a public book catalog by title (and optionally author) to add a book with no barcode to scan.</p>
           <div class="input-row">
             <input id="search-add-title-input" type="text" placeholder="Title, e.g. Dune" data-i18n-placeholder="scan.searchAdd.titlePlaceholder">
@@ -87,10 +87,10 @@
           </div>
           <p class="status" id="search-add-status"></p>
           <div id="search-add-results" class="book-grid"></div>
-        </div>
+        </details>
 
-        <div class="card">
-          <h2 data-i18n="scan.manual.title">Manual entry</h2>
+        <details class="card collapsible" open>
+          <summary><h2 data-i18n="scan.manual.title">Manual entry</h2></summary>
           <p class="hint" data-i18n="scan.manual.hint">Fallback for books with no barcode, or when metadata lookup fails.</p>
           <form id="manual-add-form" class="book-form">
             <div class="form-grid">
@@ -111,6 +111,11 @@
               <label><span data-i18n="field.shelf.label">Shelf</span> <input name="shelf" list="loc-shelf-options"></label>
               <label class="span-2"><span data-i18n="field.notes.label">Notes</span> <textarea name="notes" rows="2"></textarea></label>
             </div>
+            <label class="scan-photo-label" for="manual-cover-input">
+              <span class="tab-icon">🖼️</span> <span data-i18n="field.cover.uploadHint">Upload cover image</span>
+              <input id="manual-cover-input" type="file" accept="image/*" class="hidden-file-input">
+            </label>
+            <div id="manual-cover-preview" class="book-cover cover-upload-preview hidden"></div>
             <div class="candidate-checkbox-row">
               <input type="checkbox" name="is_read"> <span data-i18n="field.isRead.label">Read</span>
             </div>
@@ -123,13 +128,13 @@
             <button type="submit" data-i18n="scan.manual.save">Save book</button>
             <p class="status" id="manual-add-status"></p>
           </form>
-        </div>
+        </details>
       </section>
 
       <!-- ================================ Library ================================ -->
       <section class="view" id="view-library">
-        <div class="card">
-          <h2 data-i18n="library.search.title">Search &amp; filter</h2>
+        <details class="card collapsible" open>
+          <summary><h2 data-i18n="library.search.title">Search &amp; filter</h2></summary>
           <div class="input-row">
             <input id="library-search-input" type="text" placeholder="Search title, author, notes..." data-i18n-placeholder="library.search.placeholder">
             <button id="library-search-btn" data-i18n="library.search.button">Search</button>
@@ -148,6 +153,12 @@
             </div>
             <button id="library-export-btn" class="secondary" data-i18n="library.exportCsv">Export CSV</button>
           </div>
+        </details>
+
+        <div class="card">
+          <h2 data-i18n="library.pickOfTheDay.title">Pick of the day</h2>
+          <p class="hint" data-i18n="library.pickOfTheDay.hint">A randomly-selected book from your library.</p>
+          <div id="pick-of-the-day-body"></div>
         </div>
 
         <div id="library-grid" class="book-grid">
@@ -157,6 +168,7 @@
           <table id="library-table" class="book-table"></table>
         </div>
       </section>
+
 
       <!-- ================================= Ask AI ================================= -->
       <section class="view" id="view-ai">
@@ -213,6 +225,7 @@
               <div class="view-toggle">
                 <button type="button" id="pref-theme-dark-btn" class="view-toggle-btn" data-i18n="settings.prefs.theme.dark">Dark</button>
                 <button type="button" id="pref-theme-light-btn" class="view-toggle-btn" data-i18n="settings.prefs.theme.light">Light</button>
+                <button type="button" id="pref-theme-day1-btn" class="view-toggle-btn" data-i18n="settings.prefs.theme.day1">Day1</button>
               </div>
             </label>
             <label class="candidate-checkbox-row" style="font-size:0.9rem; color:var(--text);">

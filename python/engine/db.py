@@ -121,6 +121,10 @@ class BookDB:
         rows = self._store.execute_sql(f"SELECT * FROM {TABLE} WHERE is_favorite = 1 ORDER BY {order_by}")
         return [BookRecord.from_row(r) for r in (rows or [])]
 
+    def random_book(self) -> BookRecord | None:
+        rows = self._store.execute_sql(f"SELECT * FROM {TABLE} ORDER BY RANDOM() LIMIT 1")
+        return BookRecord.from_row(rows[0]) if rows else None
+
     def distinct_locations(self) -> dict[str, list[str]]:
         out = {}
         for field in ("room", "floor", "column", "shelf"):

@@ -85,8 +85,77 @@ function setupTabs() {
 function switchView(view) {
   qsa(".tab-btn").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === view));
   qsa(".view").forEach((sec) => sec.classList.toggle("active", sec.id === `view-${view}`));
-  if (view === "library") loadLibrary();
+  if (view === "library") {
+    loadLibrary();
+    loadPickOfTheDay();
+  }
   if (view === "desert-island") loadDesertIsland();
+}
+
+// -- pull-to-refresh (phone/touch only) ----------------------------------------------------------
+// Vanilla touch handling, no library -- consistent with this app's "no framework" convention.
+// Only attaches on narrow+touch viewports so desktop/mouse users see no behavior change.
+
+function refreshActiveView() {
+  const active = qs(".view.active");
+  if (!active) return Promise.resolve();
+  if (active.id === "view-library") return Promise.all([loadLibrary(), loadPickOfTheDay()]);
+  if (active.id === "view-desert-island") return loadDesertIsland();
+  return loadLocations();
+}
+
+function setupPullToRefresh(scrollEl, onRefresh) {
+  const isTouchPhone = "ontouchstart" in window && window.matchMedia("(max-width: 600px)").matches;
+  if (!isTouchPhone) return;
+
+  const PULL_THRESHOLD = 60;
+  const MAX_PULL = 100;
+  const indicator = document.createElement("div");
+  indicator.className = "pull-refresh-indicator";
+  indicator.innerHTML = `<span class="pull-refresh-icon">⟳</span>`;
+  scrollEl.prepend(indicator);
+
+  let startY = null;
+  let pulling = false;
+  let refreshing = false;
+
+  scrollEl.addEventListener("touchstart", (evt) => {
+    if (refreshing || scrollEl.scrollTop > 0) {
+      startY = null;
+      return;
+    }
+    startY = evt.touches[0].clientY;
+    pulling = true;
+  });
+
+  scrollEl.addEventListener("touchmove", (evt) => {
+    if (!pulling || startY == null) return;
+    const delta = evt.touches[0].clientY - startY;
+    if (delta <= 0) return;
+    const pull = Math.min(delta, MAX_PULL);
+    indicator.style.transform = `translateY(${pull}px)`;
+    indicator.classList.toggle("pull-refresh-ready", pull >= PULL_THRESHOLD);
+  });
+
+  scrollEl.addEventListener("touchend", (evt) => {
+    if (!pulling || startY == null) return;
+    const delta = (evt.changedTouches[0]?.clientY ?? startY) - startY;
+    pulling = false;
+    startY = null;
+    if (delta >= PULL_THRESHOLD) {
+      refreshing = true;
+      indicator.classList.add("pull-refresh-spinning");
+      indicator.style.transform = `translateY(${PULL_THRESHOLD}px)`;
+      Promise.resolve(onRefresh()).finally(() => {
+        refreshing = false;
+        indicator.classList.remove("pull-refresh-spinning", "pull-refresh-ready");
+        indicator.style.transform = "";
+      });
+    } else {
+      indicator.classList.remove("pull-refresh-ready");
+      indicator.style.transform = "";
+    }
+  });
 }
 
 // -- locations (autocomplete datalists + library filter dropdowns) ----------------------------
@@ -346,6 +415,10 @@ function bookFromFormData(form) {
 
 function setupManualAddForm() {
   const form = qs("#manual-add-form");
+  let coverDataUri = null;
+  wireCoverPreview(qs("#manual-cover-input"), qs("#manual-cover-preview"), (dataUri) => {
+    coverDataUri = dataUri;
+  });
   form.addEventListener("submit", async (evt) => {
     evt.preventDefault();
     const status = qs("#manual-add-status");
@@ -353,10 +426,14 @@ function setupManualAddForm() {
     status.textContent = t("js.manualAdd.saving");
     try {
       const book = bookFromFormData(form);
+      if (coverDataUri) book.cover_data_uri = coverDataUri;
       const saved = await apiSend("POST", "/api/books", book);
       status.className = "status success";
       status.textContent = t("js.manualAdd.saved", { title: saved.title });
       form.reset();
+      coverDataUri = null;
+      qs("#manual-cover-preview").innerHTML = "";
+      qs("#manual-cover-preview").classList.add("hidden");
       loadLocations();
     } catch (exc) {
       status.className = "status error";
@@ -601,9 +678,13 @@ function renderBookModalBody(book) {
   const cover = coverSrc(book);
   const body = qs("#book-modal-body");
   body.innerHTML = `
-    <div class="book-cover" style="max-width:160px; margin:0 auto 0.75rem;">
+    <div id="book-modal-cover" class="book-cover" style="max-width:160px; margin:0 auto 0.75rem;">
       ${cover ? `<img src="${cover}" alt="">` : "📕"}
     </div>
+    <label class="scan-photo-label" for="book-modal-cover-input">
+      <span class="tab-icon">🖼️</span> <span>${t("field.cover.uploadHint")}</span>
+      <input id="book-modal-cover-input" type="file" accept="image/*" class="hidden-file-input">
+    </label>
     <form id="book-edit-form" class="book-form">
       <div class="form-grid">
         <label>${t("field.title.label")} <input name="title" value="${escapeHtml(book.title)}" required></label>
@@ -648,6 +729,11 @@ function renderBookModalBody(book) {
     fetchSynopsisBtn.addEventListener("click", () => fetchSynopsisInto(isbn, descriptionEl, fetchSynopsisBtn));
   }
 
+  let coverDataUri = null;
+  wireCoverPreview(qs("#book-modal-cover-input", body), qs("#book-modal-cover", body), (dataUri) => {
+    coverDataUri = dataUri;
+  });
+
   qs("#book-edit-form", body).addEventListener("submit", async (evt) => {
     evt.preventDefault();
     const status = qs("#book-edit-status", body);
@@ -656,6 +742,7 @@ function renderBookModalBody(book) {
     try {
       const updated = bookFromFormData(evt.target);
       updated.source = book.source || "manual";
+      if (coverDataUri) updated.cover_data_uri = coverDataUri;
       await apiSend("PUT", `/api/books/${book.id}`, updated);
       status.className = "status success";
       status.textContent = t("js.bookEdit.saved");
@@ -706,6 +793,35 @@ async function loadDesertIsland() {
   }
 }
 
+// -- Library view: pick of the day ---------------------------------------------------------------
+
+async function loadPickOfTheDay() {
+  const container = qs("#pick-of-the-day-body");
+  try {
+    const data = await apiGet("/api/books/pick_of_the_day");
+    const book = data.book;
+    if (!book) {
+      container.innerHTML = `<p class="empty">${t("js.library.noBooksFound")}</p>`;
+      return;
+    }
+    const cover = coverSrc(book);
+    container.innerHTML = `
+      <div class="book-card" style="cursor:pointer; flex-direction:row; align-items:center;">
+        <div class="book-cover" style="width:60px; flex-shrink:0;">
+          ${cover ? `<img src="${cover}" alt="">` : "📕"}
+        </div>
+        <div style="flex:1;">
+          <div class="book-title">${escapeHtml(book.title || t("js.book.untitled"))}</div>
+          <div class="book-author">${escapeHtml(formatAuthors(book.authors))}</div>
+        </div>
+      </div>
+    `;
+    qs(".book-card", container).addEventListener("click", () => openBookModal(book));
+  } catch (exc) {
+    container.innerHTML = `<p class="empty">${t("js.library.loadFailed")}</p>`;
+  }
+}
+
 // -- Ask AI view --------------------------------------------------------------------------------
 
 function setupAiSearch() {
@@ -745,6 +861,23 @@ function fileToBase64(file) {
       resolve(reader.result.slice(commaIdx + 1));
     };
     reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// reads a picked file as a data: URI (kept intact, unlike fileToBase64's stripped form -- this
+// one feeds straight into BookIn.cover_data_uri on the backend and an <img src> for the live
+// preview) and reports it via onChange; also swaps it into imgContainerEl immediately.
+function wireCoverPreview(inputEl, imgContainerEl, onChange) {
+  inputEl.addEventListener("change", () => {
+    const file = inputEl.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      imgContainerEl.innerHTML = `<img src="${reader.result}" alt="">`;
+      imgContainerEl.classList.remove("hidden");
+      onChange(reader.result);
+    };
     reader.readAsDataURL(file);
   });
 }
@@ -851,15 +984,19 @@ function setupShelfPhoto() {
 // -- Settings: preferences (language, theme, synopsis default) ---------------------------------
 
 function applyTheme(theme) {
-  if (theme === "light") {
-    document.documentElement.dataset.theme = "light";
-  } else {
+  if (theme === "dark" || !theme) {
     delete document.documentElement.dataset.theme;
+  } else {
+    document.documentElement.dataset.theme = theme;
   }
-  qs("#pref-theme-dark-btn")?.classList.toggle("active", theme !== "light");
+  qs("#pref-theme-dark-btn")?.classList.toggle("active", theme === "dark" || !theme);
   qs("#pref-theme-light-btn")?.classList.toggle("active", theme === "light");
+  qs("#pref-theme-day1-btn")?.classList.toggle("active", theme === "day1");
   const themeColorMeta = qs("#theme-color-meta");
-  if (themeColorMeta) themeColorMeta.content = theme === "light" ? "#f7f1e6" : "#14120f";
+  if (themeColorMeta) {
+    const colors = { light: "#f7f1e6", day1: "#232f3e" };
+    themeColorMeta.content = colors[theme] || "#14120f";
+  }
 }
 
 async function setupPreferences() {
@@ -896,6 +1033,15 @@ async function setupPreferences() {
   qs("#pref-theme-light-btn").addEventListener("click", async () => {
     try {
       currentSettings = await apiSend("POST", "/api/settings", { ui_theme: "light" });
+      applyTheme(currentSettings.ui_theme);
+    } catch (exc) {
+      toast(t("js.prefs.themeFailed"), true);
+    }
+  });
+
+  qs("#pref-theme-day1-btn").addEventListener("click", async () => {
+    try {
+      currentSettings = await apiSend("POST", "/api/settings", { ui_theme: "day1" });
       applyTheme(currentSettings.ui_theme);
     } catch (exc) {
       toast(t("js.prefs.themeFailed"), true);
@@ -993,6 +1139,7 @@ function main() {
   setupShelfPhoto();
   setupSettingsCsv();
   setupPreferences();
+  setupPullToRefresh(qs("#content"), refreshActiveView);
   loadLocations();
 }
 

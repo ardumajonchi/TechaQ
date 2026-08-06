@@ -26,7 +26,7 @@ SCHEMA = {
 }
 
 LANGUAGES = ("en", "it", "de", "fr", "es")
-THEMES = ("dark", "light")
+THEMES = ("dark", "light", "day1")
 
 _DEFAULTS = {
     "fetch_synopsis_default": False,

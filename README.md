@@ -41,7 +41,9 @@ and the systemd user service that runs `host/scanner_reader.py`.
   any HID-compliant scanner works, since they all enumerate as a keyboard and "type" the
   decoded digits. A scan POSTs to `/api/scan`, which looks up the code and auto-saves on a hit.
 - **Manual**: fill in the Add Book form yourself — every field a scan would populate is
-  editable, plus the four location fields and the read/reading-list/favorite checkboxes.
+  editable, plus the four location fields and the read/reading-list/favorite checkboxes. You can
+  also upload a cover image yourself instead of relying on an auto-fetched one; uploading a new
+  cover from a book's detail view replaces whatever cover it had before.
 - **Look up an ISBN**: type (or paste) an ISBN/EAN to preview its metadata before saving, or tap
   "Scan ISBN from photo" to photograph the barcode's printed digits instead of typing — the same
   `ocr_runtime` OCR pipeline reads the digits, offers up any plausible ISBN-looking candidates for
@@ -58,6 +60,11 @@ and the systemd user service that runs `host/scanner_reader.py`.
 Every book also carries three checkboxes: **Read**, **Reading list**, and **Favorite** — set them
 when adding a book, or later from its detail view.
 
+Every card on the Scan/Add page, and the Library's Search & filter card, can be collapsed by
+tapping its title bar — handy for getting a long card out of the way once you're done with it.
+On a phone, pulling down past the top of the Library or Desert Island view triggers a
+pull-to-refresh of that view's data.
+
 ### Finding books
 
 - **Keyword search** matches title, subtitle, authors, description, and notes.
@@ -67,6 +74,9 @@ when adding a book, or later from its detail view.
   returns real matches; it can never invent a book that doesn't exist in the search results.
 - **Grid or list view** — toggle the Library between a cover-art grid and a compact table, and
   export whatever's currently displayed (after a search or filter) as a CSV file.
+- **Pick of the day** — a randomly-selected book from your whole library, shown at the top of the
+  Library view with its cover, title, and author; tap it to open the usual detail/edit view. A
+  new pick is drawn each time you visit the Library tab.
 - **Desert Island** — a dedicated tab listing every book marked as a favorite, the ones you'd
   take with you. It refreshes each time you open the tab, so favoriting/unfavoriting a book from
   its detail view is reflected the next time you visit.
@@ -75,10 +85,12 @@ when adding a book, or later from its detail view.
 ### Settings
 
 - **Preferences** — pick the UI language (English, Italiano, Deutsch, Français, Español), switch
-  between the dark (default) and light theme, and choose whether scanning/looking up a book
-  fetches its synopsis automatically or leaves that for a manual "Fetch synopsis" button (shown
-  on a book's lookup preview and detail view whenever its description is still empty). All three
-  preferences are stored server-side, shared across every device viewing the app.
+  between the dark (default), light, and "Day1" themes (the last one a pastiche of amazon.com
+  circa 2005 — navy header, orange gradient buttons, boxy borders), and choose whether
+  scanning/looking up a book fetches its synopsis automatically or leaves that for a manual
+  "Fetch synopsis" button (shown on a book's lookup preview and detail view whenever its
+  description is still empty). All these preferences are stored server-side, shared across every
+  device viewing the app.
 - **Import / export the whole library as CSV** — export every book to a CSV file, or import a
   CSV of books in that same format; rows whose ISBN already matches a book already in the
   library are skipped rather than duplicated.
@@ -108,6 +120,25 @@ the same screen.
 - **Desert Island.** `Library.list_favorites` / `GET /api/books/favorites` filters the library
   down to `is_favorite = 1`, rendered in its own tab with the same book-grid component the
   Library view uses, so opening a book still goes through the normal edit modal.
+- **Pick of the day.** `BookDB.random_book` (`SELECT * FROM books ORDER BY RANDOM() LIMIT 1`) backs
+  `Library.pick_of_the_day` / `GET /api/books/pick_of_the_day`, rendered as a single inline book
+  block in the Library view the same way an ISBN-lookup preview is — clicking it opens the normal
+  edit modal. A new pick is drawn once per Library-tab visit, not on every search/filter.
+- **Manual cover upload.** The Scan/Add manual-entry form and the book edit modal both expose a
+  file picker that reads the chosen image into a `cover_data_uri` data URI client-side (the same
+  `BookIn.cover_data_uri` field `to_book()` already decoded for OCR/lookup-preview saves) and
+  includes it in the `POST`/`PUT` body — no new backend path was needed, since `update_book`'s
+  existing "preserve the old cover when the edit carries none" logic only fires when
+  `cover_image` is empty, and a decoded upload already has it set.
+- **Collapsible sections.** Every card on the Scan/Add page, and the Library's Search & filter
+  card, is a native `<details>`/`<summary>` element rather than a JS-driven toggle — no state to
+  manage, keyboard/screen-reader accessible for free, and degrades to always-expanded if CSS
+  fails to load.
+- **Pull-to-refresh.** `app.js`'s `setupPullToRefresh` is a small vanilla touch-event handler
+  (touchstart/touchmove/touchend) attached to `#content`, gated to touch+narrow (`≤600px`)
+  viewports so desktop/mouse users see no behavior change. Pulling past a threshold re-runs
+  whichever view is currently active (`loadLibrary`+`loadPickOfTheDay`, `loadDesertIsland`, or a
+  harmless `loadLocations` refresh elsewhere).
 - **Metadata.** `python/engine/metadata.py` queries six sources concurrently by ISBN — Open
   Library, Google Books, two national-library SRU catalogs (Deutsche Nationalbibliothek and
   Bibliothèque nationale de France, sharing one Dublin-Core XML parsing helper), Italy's OPAC SBN
@@ -162,8 +193,11 @@ the same screen.
   Brick, with real-time scan/save toasts over its Socket.IO channel. `assets/i18n.js` holds all
   five languages' strings and the `applyTranslations()`/`t()` machinery; every static label uses
   a `data-i18n*` attribute and every dynamic string (toasts, statuses) routes through `t()`. The
-  light theme is a `[data-theme="light"]` CSS-variable override block in `style.css` — every
-  other rule in the file already consumes those variables, so no other CSS changes were needed.
+  light theme is a `[data-theme="light"]` CSS-variable override block in `style.css`, and the
+  "Day1" theme (an amazon.com-circa-2005 pastiche) is a second such block — every other rule in
+  the file already consumes those variables, so no other CSS changes were needed beyond a couple
+  of Day1-only cosmetic exceptions (navy topbar/tabbar, gradient buttons) scoped strictly under
+  `[data-theme="day1"]` and called out as such in a comment.
 - **Live ISBN lookup status.** An "Look up an ISBN" preview no longer just shows a static
   "Looking up..." message: `engine/metadata.py`'s `fetch_by_isbn` reports each of its six
   concurrent catalog fetches (Open Library, Google Books, DNB, BNF, OPAC SBN, isbnsearch.org) the

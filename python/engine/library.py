@@ -354,6 +354,9 @@ class Library:
     def list_favorites(self) -> list[BookRecord]:
         return self.db.list_favorites()
 
+    def pick_of_the_day(self) -> BookRecord | None:
+        return self.db.random_book()
+
     # -- search-by-title/author add flow ---------------------------------------------------------
 
     def search_add(self, title: str, author: str = "") -> list[BookRecord]:

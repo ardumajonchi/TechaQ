@@ -54,6 +54,8 @@ const TRANSLATIONS = {
     "field.isRead.label": "Read",
     "field.inReadingList.label": "Reading list",
     "field.isFavorite.label": "Favorite",
+    "field.cover.label": "Cover",
+    "field.cover.uploadHint": "Upload cover image",
 
     "library.search.title": "Search & filter",
     "library.search.placeholder": "Search title, author, notes...",
@@ -63,6 +65,8 @@ const TRANSLATIONS = {
     "library.view.grid": "Grid view",
     "library.view.list": "List view",
     "library.exportCsv": "Export CSV",
+    "library.pickOfTheDay.title": "Pick of the day",
+    "library.pickOfTheDay.hint": "A randomly-selected book from your library.",
 
     "common.loading": "Loading...",
 
@@ -83,6 +87,7 @@ const TRANSLATIONS = {
     "settings.prefs.theme": "Theme",
     "settings.prefs.theme.dark": "Dark",
     "settings.prefs.theme.light": "Light",
+    "settings.prefs.theme.day1": "Day1",
     "settings.prefs.fetchSynopsis": "Fetch book synopsis automatically",
     "settings.prefs.fetchSynopsis.hint": "When off, saving/looking up a book skips fetching its synopsis (faster) -- use the \"Fetch synopsis\" button on a book's preview or detail view to get it on demand.",
 
@@ -227,6 +232,8 @@ const TRANSLATIONS = {
     "field.isRead.label": "Letto",
     "field.inReadingList.label": "Lista di lettura",
     "field.isFavorite.label": "Preferito",
+    "field.cover.label": "Copertina",
+    "field.cover.uploadHint": "Carica immagine di copertina",
 
     "library.search.title": "Cerca e filtra",
     "library.search.placeholder": "Cerca titolo, autore, note...",
@@ -236,6 +243,8 @@ const TRANSLATIONS = {
     "library.view.grid": "Vista a griglia",
     "library.view.list": "Vista a elenco",
     "library.exportCsv": "Esporta CSV",
+    "library.pickOfTheDay.title": "Scelta del giorno",
+    "library.pickOfTheDay.hint": "Un libro selezionato a caso dalla tua libreria.",
 
     "common.loading": "Caricamento...",
 
@@ -256,6 +265,7 @@ const TRANSLATIONS = {
     "settings.prefs.theme": "Tema",
     "settings.prefs.theme.dark": "Scuro",
     "settings.prefs.theme.light": "Chiaro",
+    "settings.prefs.theme.day1": "Day1",
     "settings.prefs.fetchSynopsis": "Recupera automaticamente la sinossi del libro",
     "settings.prefs.fetchSynopsis.hint": "Se disattivato, salvare/cercare un libro salta il recupero della sinossi (più veloce) -- usa il pulsante \"Recupera sinossi\" nell'anteprima o nel dettaglio del libro per averla su richiesta.",
 
@@ -400,6 +410,8 @@ const TRANSLATIONS = {
     "field.isRead.label": "Gelesen",
     "field.inReadingList.label": "Leseliste",
     "field.isFavorite.label": "Favorit",
+    "field.cover.label": "Cover",
+    "field.cover.uploadHint": "Cover-Bild hochladen",
 
     "library.search.title": "Suchen & filtern",
     "library.search.placeholder": "Titel, Autor, Notizen durchsuchen...",
@@ -409,6 +421,8 @@ const TRANSLATIONS = {
     "library.view.grid": "Rasteransicht",
     "library.view.list": "Listenansicht",
     "library.exportCsv": "CSV exportieren",
+    "library.pickOfTheDay.title": "Buch des Tages",
+    "library.pickOfTheDay.hint": "Ein zufällig ausgewähltes Buch aus deiner Bibliothek.",
 
     "common.loading": "Wird geladen...",
 
@@ -429,6 +443,7 @@ const TRANSLATIONS = {
     "settings.prefs.theme": "Design",
     "settings.prefs.theme.dark": "Dunkel",
     "settings.prefs.theme.light": "Hell",
+    "settings.prefs.theme.day1": "Day1",
     "settings.prefs.fetchSynopsis": "Buchzusammenfassung automatisch abrufen",
     "settings.prefs.fetchSynopsis.hint": "Wenn deaktiviert, wird beim Speichern/Nachschlagen eines Buchs der Abruf der Zusammenfassung übersprungen (schneller) -- nutze den Button \"Zusammenfassung abrufen\" in der Vorschau oder Detailansicht eines Buchs, um sie bei Bedarf zu holen.",
 
@@ -573,6 +588,8 @@ const TRANSLATIONS = {
     "field.isRead.label": "Lu",
     "field.inReadingList.label": "Liste de lecture",
     "field.isFavorite.label": "Favori",
+    "field.cover.label": "Couverture",
+    "field.cover.uploadHint": "Télécharger une image de couverture",
 
     "library.search.title": "Rechercher et filtrer",
     "library.search.placeholder": "Rechercher titre, auteur, notes...",
@@ -582,6 +599,8 @@ const TRANSLATIONS = {
     "library.view.grid": "Vue grille",
     "library.view.list": "Vue liste",
     "library.exportCsv": "Exporter CSV",
+    "library.pickOfTheDay.title": "Sélection du jour",
+    "library.pickOfTheDay.hint": "Un livre sélectionné au hasard dans votre bibliothèque.",
 
     "common.loading": "Chargement...",
 
@@ -602,6 +621,7 @@ const TRANSLATIONS = {
     "settings.prefs.theme": "Thème",
     "settings.prefs.theme.dark": "Sombre",
     "settings.prefs.theme.light": "Clair",
+    "settings.prefs.theme.day1": "Day1",
     "settings.prefs.fetchSynopsis": "Récupérer automatiquement le résumé du livre",
     "settings.prefs.fetchSynopsis.hint": "Si désactivé, l'enregistrement/la recherche d'un livre ignore la récupération de son résumé (plus rapide) -- utilisez le bouton \"Récupérer le résumé\" dans l'aperçu ou la fiche détaillée d'un livre pour l'obtenir à la demande.",
 
@@ -746,6 +766,8 @@ const TRANSLATIONS = {
     "field.isRead.label": "Leído",
     "field.inReadingList.label": "Lista de lectura",
     "field.isFavorite.label": "Favorito",
+    "field.cover.label": "Portada",
+    "field.cover.uploadHint": "Subir imagen de portada",
 
     "library.search.title": "Buscar y filtrar",
     "library.search.placeholder": "Buscar título, autor, notas...",
@@ -755,6 +777,8 @@ const TRANSLATIONS = {
     "library.view.grid": "Vista de cuadrícula",
     "library.view.list": "Vista de lista",
     "library.exportCsv": "Exportar CSV",
+    "library.pickOfTheDay.title": "Selección del día",
+    "library.pickOfTheDay.hint": "Un libro seleccionado al azar de tu biblioteca.",
 
     "common.loading": "Cargando...",
 
@@ -775,6 +799,7 @@ const TRANSLATIONS = {
     "settings.prefs.theme": "Tema",
     "settings.prefs.theme.dark": "Oscuro",
     "settings.prefs.theme.light": "Claro",
+    "settings.prefs.theme.day1": "Day1",
     "settings.prefs.fetchSynopsis": "Obtener automáticamente la sinopsis del libro",
     "settings.prefs.fetchSynopsis.hint": "Si está desactivado, guardar/buscar un libro omite obtener su sinopsis (más rápido) -- usa el botón \"Obtener sinopsis\" en la vista previa o el detalle de un libro para obtenerla a petición.",
 

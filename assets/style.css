@@ -36,6 +36,23 @@
   --radius: 10px;
 }
 
+/* "Day1" -- an Amazon.com-circa-2005 pastiche: white panels, boxy blue-grey borders, black text,
+   bright orange accent buttons with black (not white) label text, era-accurate. */
+[data-theme="day1"] {
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --panel-alt: #f0f2f2;
+  --border: #a6b7c7;
+  --text: #000000;
+  --text-dim: #555555;
+  --accent: #ff9900;
+  --accent-hover: #e88a00;
+  --accent-text: #111111;
+  --danger: #cc0c39;
+  --success: #007600;
+  --radius: 4px;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -127,6 +144,7 @@ html, body {
   order: 1;
   padding: 0.75rem 1rem 1.25rem;
   overflow-y: auto;
+  position: relative;
 }
 
 .view {
@@ -733,6 +751,123 @@ button:disabled {
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(-8px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* -- collapsible cards (Scan/Add, Library search & filter) -- native <details>/<summary>, no JS
+   state to manage, degrades to always-expanded if CSS fails to load. */
+
+details.collapsible > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+details.collapsible > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.collapsible > summary::before {
+  content: "▸";
+  color: var(--accent);
+  font-size: 0.8rem;
+  transition: transform 0.15s ease;
+}
+
+details.collapsible[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details.collapsible > summary h2 {
+  margin: 0 0 0.4rem;
+}
+
+details.collapsible[open] > summary {
+  margin-bottom: 0;
+}
+
+/* -- manually-uploaded cover preview (Scan/Add manual entry form) --------------------------- */
+
+.cover-upload-preview {
+  max-width: 120px;
+  margin-bottom: 0.6rem;
+}
+
+/* -- pull-to-refresh indicator (phone/touch only, see app.js's setupPullToRefresh) ----------- */
+
+.pull-refresh-indicator {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translate(-50%, -100%);
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--accent);
+  font-size: 1.2rem;
+  transition: transform 0.15s ease;
+  z-index: 5;
+}
+
+.pull-refresh-indicator.pull-refresh-ready {
+  color: var(--accent-hover);
+}
+
+.pull-refresh-indicator.pull-refresh-spinning .pull-refresh-icon {
+  display: inline-block;
+  animation: lookup-spin 0.7s linear infinite;
+}
+
+/* -- Day1-only cosmetic exceptions -- the one deliberate departure from "every rule consumes the
+   shared variables"; scoped strictly to this theme so dark/light are unaffected. */
+
+[data-theme="day1"] #topbar,
+[data-theme="day1"] #tabbar {
+  background: #232f3e;
+  color: #ffffff;
+  border-bottom: 3px solid var(--accent);
+}
+
+[data-theme="day1"] #topbar .tagline {
+  color: #cccccc;
+}
+
+[data-theme="day1"] .tab-btn {
+  color: #ffffff;
+}
+
+[data-theme="day1"] .tab-btn.active,
+[data-theme="day1"] .tab-btn:hover {
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="day1"] button {
+  background: linear-gradient(#f7dfa5, #f0c14b);
+  border: 1px solid #a77d28;
+  color: #111111;
+}
+
+[data-theme="day1"] button:hover {
+  background: linear-gradient(#f5d78e, #eeb933);
+}
+
+[data-theme="day1"] button.secondary {
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+[data-theme="day1"] button.danger {
+  background: var(--danger);
+  border: 1px solid var(--danger);
+  color: #fff;
 }
 
 /* ================================================================================================

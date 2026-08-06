@@ -59,6 +59,12 @@ def test_update_ui_theme(store):
     assert store.get()["ui_theme"] == "light"
 
 
+def test_update_ui_theme_day1(store):
+    result = store.update({"ui_theme": "day1"})
+    assert result["ui_theme"] == "day1"
+    assert store.get()["ui_theme"] == "day1"
+
+
 def test_update_rejects_unsupported_language(store):
     with pytest.raises(ValueError):
         store.update({"ui_language": "klingon"})

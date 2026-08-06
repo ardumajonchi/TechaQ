@@ -16,6 +16,10 @@ REST API (all bodies/responses are JSON except the cover-image route, see below)
                                             (any subset of the four location params may be given)
   GET    /api/books/favorites          -- every book with is_favorite=true, for the "Desert
                                             Island" view. Same shape as GET /api/books.
+  GET    /api/books/pick_of_the_day    -- one randomly-selected book from the whole library, for
+                                            the Library view's "Pick of the day" card. Returns
+                                            {"book": {...}} or {"book": null} if the library is
+                                            empty.
   GET    /api/books/{book_id}          -- one book, 404-shaped {"error": "not found"} if missing.
   POST   /api/books                    -- manual add. Body: BookIn (see below), same field names
                                             as BookRecord minus id/created_at/updated_at/cover_image,
@@ -273,6 +277,10 @@ def main():
     def list_favorite_books():
         return {"books": [book_to_dict(b) for b in library.list_favorites()]}
 
+    def pick_of_the_day():
+        book = library.pick_of_the_day()
+        return {"book": book_to_dict(book) if book else None}
+
     # -- scanner integration --------------------------------------------------------------------
 
     def handle_scan(body: ScanIn):
@@ -360,6 +368,7 @@ def main():
 
     ui.expose_api("GET", "/api/books", list_books)
     ui.expose_api("GET", "/api/books/favorites", list_favorite_books)
+    ui.expose_api("GET", "/api/books/pick_of_the_day", pick_of_the_day)
     ui.expose_api("GET", "/api/books/{book_id}", get_book)
     ui.expose_api("POST", "/api/books", create_book)
     ui.expose_api("PUT", "/api/books/{book_id}", update_book)

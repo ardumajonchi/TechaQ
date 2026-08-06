@@ -926,6 +926,22 @@ def test_list_favorites_empty_when_none_favorited(library):
 
 
 # ---------------------------------------------------------------------------
+# pick_of_the_day
+# ---------------------------------------------------------------------------
+
+
+def test_pick_of_the_day_returns_a_book_from_the_library(library):
+    library.add_book(make_book(title="Only Book", isbn13="9781111111111"))
+    pick = library.pick_of_the_day()
+    assert pick is not None
+    assert pick.title == "Only Book"
+
+
+def test_pick_of_the_day_empty_library_returns_none(library):
+    assert library.pick_of_the_day() is None
+
+
+# ---------------------------------------------------------------------------
 # search_add (search-by-title/author add flow)
 # ---------------------------------------------------------------------------
 
