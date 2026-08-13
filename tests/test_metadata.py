@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: MPL-2.0
 """Tests for engine/metadata.py: fetch_by_isbn (Open Library + Google Books + DNB + BNF merge
 logic, richer-value-wins, graceful 429/error handling, cover-image fallback, deferred-description
-gating), fetch_description (Google-Books-only synopsis fetch), and search_by_title_author (Open
-Library search parsing, empty-on-error). All network access is mocked via monkeypatching
-requests.get -- no real HTTP calls are made.
+gating), fetch_description (Google Books primary, Open Library work-description fallback), and
+search_by_title_author (Open Library search parsing, empty-on-error). All network access is
+mocked via monkeypatching requests.get -- no real HTTP calls are made.
 """
 
 from __future__ import annotations
@@ -61,8 +61,11 @@ def _openlibrary_author_response(name):
     return FakeResponse(json_data={"name": name})
 
 
-def _openlibrary_work_response(subjects=("Sci-Fi",)):
-    return FakeResponse(json_data={"subjects": list(subjects)})
+def _openlibrary_work_response(subjects=("Sci-Fi",), description=None):
+    data = {"subjects": list(subjects)}
+    if description is not None:
+        data["description"] = description
+    return FakeResponse(json_data=data)
 
 
 def _googlebooks_response(title="Dune", authors=("Frank Herbert",), publisher="Ace Books",
@@ -278,6 +281,26 @@ def test_fetch_by_isbn_openlibrary_only(monkeypatch):
     assert record.source == "openlibrary"
     assert record.title == "Dune"
     assert record.description == ""
+
+
+def test_fetch_by_isbn_description_falls_back_to_openlibrary_when_googlebooks_misses(monkeypatch):
+    isbn = "9780441172719"
+    mapping = {
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): _openlibrary_edition_response(),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/authors/OL79034A"): _openlibrary_author_response("Frank Herbert"),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"): _openlibrary_work_response(
+            description="Set on the desert planet Arrakis..."
+        ),
+        metadata._OPENLIBRARY_COVER_URL.format(isbn=isbn): _cover_response(),
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
+
+    record = metadata.fetch_by_isbn(isbn, include_description=True)
+
+    assert record.source == "openlibrary"
+    assert record.description == "Set on the desert planet Arrakis..."
 
 
 def test_fetch_by_isbn_googlebooks_only(monkeypatch):
@@ -757,7 +780,7 @@ def test_fetch_isbnsearch_botcheck_page_returns_empty_dict(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_fetch_description_calls_only_googlebooks(monkeypatch):
+def test_fetch_description_prefers_googlebooks_when_available(monkeypatch):
     isbn = "9780441172719"
 
     def fake_get(url, **kwargs):
@@ -769,6 +792,56 @@ def test_fetch_description_calls_only_googlebooks(monkeypatch):
     monkeypatch.setattr(requests, "post", fake_get)
 
     assert metadata.fetch_description(isbn) == "A desert planet epic."
+
+
+def test_fetch_description_falls_back_to_openlibrary_when_googlebooks_misses(monkeypatch):
+    """Google Books' free API shares one keyless daily quota across every TechaQ install --
+    exhausting it (or any other Google Books outage) must not silently kill synopsis fetching
+    entirely, since Open Library's work-level description covers most books too."""
+    isbn = "9780441172719"
+    mapping = {
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): _openlibrary_edition_response(),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"): _openlibrary_work_response(
+            description="Set on the desert planet Arrakis..."
+        ),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
+
+    assert metadata.fetch_description(isbn) == "Set on the desert planet Arrakis..."
+
+
+def test_fetch_description_falls_back_to_openlibrary_on_googlebooks_rate_limit(monkeypatch):
+    isbn = "9780441172719"
+    mapping = {
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=429, json_data={"error": "rate limited"}),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): _openlibrary_edition_response(),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"): _openlibrary_work_response(
+            description="Set on the desert planet Arrakis..."
+        ),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
+
+    assert metadata.fetch_description(isbn) == "Set on the desert planet Arrakis..."
+
+
+def test_fetch_description_openlibrary_description_as_dict_value(monkeypatch):
+    """Open Library sometimes returns description as {"type": "/type/text", "value": "..."}
+    rather than a plain string -- both shapes appear across editions/works."""
+    isbn = "9780441172719"
+    mapping = {
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): _openlibrary_edition_response(),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"): _openlibrary_work_response(
+            description={"type": "/type/text", "value": "Set on the desert planet Arrakis..."}
+        ),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
+
+    assert metadata.fetch_description(isbn) == "Set on the desert planet Arrakis..."
 
 
 def test_fetch_description_no_hit_returns_empty_string(monkeypatch):

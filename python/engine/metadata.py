@@ -158,9 +158,15 @@ def _fetch_openlibrary(isbn: str) -> dict:
                     _OPENLIBRARY_RESOURCE_URL.format(key=work_keys[0]), timeout=_TIMEOUT
                 )
                 work_resp.raise_for_status()
-                subjects = (work_resp.json() or {}).get("subjects") or []
+                work_data = work_resp.json() or {}
+                subjects = work_data.get("subjects") or []
                 if subjects:
                     out["categories"] = [s for s in subjects if isinstance(s, str)]
+                description = work_data.get("description")
+                if isinstance(description, dict):
+                    description = description.get("value", "")
+                if isinstance(description, str) and description.strip():
+                    out["description"] = description.strip()
             except requests.RequestException as exc:
                 log.warning("Open Library work lookup failed for isbn %s: %s", isbn, exc)
             except (ValueError, KeyError, TypeError) as exc:
@@ -555,14 +561,46 @@ def fetch_by_isbn(
     return record
 
 
+def _fetch_openlibrary_description(isbn: str) -> str:
+    """Fetch only the work-level description for an ISBN from Open Library, or "" on any
+    failure/no-hit. Never raises. Two lightweight GETs (edition -> work), no cover/author
+    resolution -- kept narrow since this only backs fetch_description's Google-Books-fallback
+    path below."""
+    try:
+        resp = requests.get(_OPENLIBRARY_EDITION_URL.format(isbn=isbn), timeout=_TIMEOUT)
+        resp.raise_for_status()
+        work_keys = [w.get("key", "") for w in (resp.json() or {}).get("works", []) or [] if w.get("key")]
+        if not work_keys:
+            return ""
+        work_resp = requests.get(_OPENLIBRARY_RESOURCE_URL.format(key=work_keys[0]), timeout=_TIMEOUT)
+        work_resp.raise_for_status()
+        description = (work_resp.json() or {}).get("description")
+        if isinstance(description, dict):
+            description = description.get("value", "")
+        return description.strip() if isinstance(description, str) else ""
+    except requests.RequestException as exc:
+        log.warning("Open Library description lookup failed for isbn %s: %s", isbn, exc)
+        return ""
+    except (ValueError, KeyError, TypeError) as exc:
+        log.warning("Open Library description parse failed for isbn %s: %s", isbn, exc)
+        return ""
+
+
 def fetch_description(isbn: str) -> str:
-    """Fetch only the synopsis/description for an ISBN, for the manual "fetch synopsis" button --
-    a deliberately narrow, single-source, fast call, since Google Books is the only integrated
-    source that ever has a description. Returns "" on any failure or no-hit. Never raises."""
+    """Fetch only the synopsis/description for an ISBN, for the manual "fetch synopsis" button
+    and the "fetch synopsis automatically" default. Tries Google Books first (usually the richer,
+    more consistently-written description when available) and falls back to Open Library's
+    work-level description if Google Books misses or is unavailable -- Google Books' keyless API
+    is rate-limited per-project on a shared daily quota, so treating it as the only source (as
+    this used to) meant synopsis fetching silently stopped working for everyone once that quota
+    was exhausted, with no fallback. Returns "" on any failure or no-hit from both. Never raises."""
     clean = _clean_isbn(isbn)
     if not clean:
         return ""
-    return _fetch_googlebooks(clean).get("description", "") or ""
+    description = _fetch_googlebooks(clean).get("description", "") or ""
+    if description:
+        return description
+    return _fetch_openlibrary_description(clean)
 
 
 def search_by_title_author(title: str, author: str = "") -> list[BookRecord]:

@@ -147,11 +147,17 @@ the same screen.
   correctly ISBN-scoped), and isbnsearch.org (a third-party ISBNdb-backed page, scraped via
   regex) — merging field-by-field (first non-empty value wins, longest description wins, cover
   falls back Open Library → Google thumbnail); `source` reports which of the six actually hit.
-  Fetching the synopsis specifically is optional per-call (`include_description`), since Google
-  Books is the only source that ever has one — the Settings "fetch synopsis automatically" toggle
-  controls the default, and `fetch_description`/the manual "Fetch synopsis" button call Google
-  Books alone. `search_by_title_author` backs both the AI-describe and OCR-candidate-resolution
-  flows. A Google Books API key is optional.
+  Fetching the synopsis specifically is optional per-call (`include_description`) since it costs
+  an extra Open Library work-lookup and/or a Google Books call — the Settings "fetch synopsis
+  automatically" toggle controls the default. Google Books is tried first (usually the richer,
+  more editorially-written description when available) with Open Library's work-level
+  description as a fallback if Google Books misses or is rate-limited — its free API enforces one
+  shared daily quota across every TechaQ install, so treating it as the only synopsis source (as
+  this app originally did) meant synopsis fetching would silently stop working for everyone once
+  that shared quota was exhausted for the day, with no way to tell the two "empty" cases apart.
+  `fetch_description`/the manual "Fetch synopsis" button share this same two-source logic.
+  `search_by_title_author` backs both the AI-describe and OCR-candidate-resolution flows. A
+  Google Books API key is optional.
 - **Web-search metadata fallback.** When all six catalog sources miss, `python/engine/
   web_lookup.py`'s `WebMetadataFallback` scrapes a handful of DuckDuckGo Lite search-result
   snippets for the ISBN and has the local LLM guess a `{title, author}` from them — never
