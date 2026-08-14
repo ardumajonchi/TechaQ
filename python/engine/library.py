@@ -306,14 +306,17 @@ class Library:
         match.source = f"websearch+{match.source}"
         return match
 
-    def fetch_synopsis(self, isbn: str) -> str:
+    def fetch_synopsis(self, isbn: str, title: str = "", author: str = "") -> str:
         """Fetch only the synopsis for an ISBN, for the manual "fetch synopsis" button -- used
-        when the default lookup skipped it (see settings.fetch_synopsis_default). Degrades to ""
-        if metadata is unavailable or the fetch fails, never raises."""
+        when the default lookup skipped it (see settings.fetch_synopsis_default). `title`/`author`
+        are optional but should be passed through when the caller already has them (the button
+        always appears next to a title/author it already knows) since metadata.fetch_description's
+        last-resort Wikipedia fallback needs a title to search for. Degrades to "" if metadata is
+        unavailable or the fetch fails, never raises."""
         if metadata is None:
             return ""
         try:
-            return metadata.fetch_description(isbn)
+            return metadata.fetch_description(isbn, title, author)
         except Exception as exc:
             print(f"[techaq] metadata.fetch_description({isbn!r}) failed: {exc!r}")
             return ""

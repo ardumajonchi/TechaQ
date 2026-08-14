@@ -567,12 +567,26 @@ def test_update_settings_rejects_unsupported_value(library):
 def test_fetch_synopsis_delegates_to_metadata(library, monkeypatch):
     class FakeMetadata:
         @staticmethod
-        def fetch_description(isbn):
+        def fetch_description(isbn, title="", author=""):
             assert isbn == "9781111111111"
             return "A gripping tale."
 
     monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
     assert library.fetch_synopsis("9781111111111") == "A gripping tale."
+
+
+def test_fetch_synopsis_passes_title_and_author_through(library, monkeypatch):
+    class FakeMetadata:
+        @staticmethod
+        def fetch_description(isbn, title="", author=""):
+            assert (isbn, title, author) == ("9781111111111", "Some Book", "Some Author")
+            return "A gripping tale."
+
+    monkeypatch.setattr(library_mod, "metadata", FakeMetadata)
+    assert (
+        library.fetch_synopsis("9781111111111", "Some Book", "Some Author")
+        == "A gripping tale."
+    )
 
 
 def test_fetch_synopsis_metadata_unavailable_returns_empty_string(library, monkeypatch):
@@ -583,7 +597,7 @@ def test_fetch_synopsis_metadata_unavailable_returns_empty_string(library, monke
 def test_fetch_synopsis_metadata_raises_is_caught(library, monkeypatch):
     class FakeMetadata:
         @staticmethod
-        def fetch_description(isbn):
+        def fetch_description(isbn, title="", author=""):
             raise RuntimeError("network down")
 
     monkeypatch.setattr(library_mod, "metadata", FakeMetadata)

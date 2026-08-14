@@ -299,7 +299,7 @@ function renderIsbnLookupResult(data) {
   const descriptionEl = qs("#isbn-lookup-description", el);
   const fetchBtn = qs("#isbn-lookup-fetch-synopsis-btn", el);
   if (fetchBtn) {
-    fetchBtn.addEventListener("click", () => fetchSynopsisInto(isbn, descriptionEl, fetchBtn));
+    fetchBtn.addEventListener("click", () => fetchSynopsisInto(isbn, descriptionEl, fetchBtn, book.title, (book.authors || [])[0] || ""));
   }
   qs("#isbn-lookup-save-btn").addEventListener("click", async () => {
     try {
@@ -726,7 +726,7 @@ function renderBookModalBody(book) {
   if (fetchSynopsisBtn) {
     const isbn = book.isbn13 || book.isbn10 || "";
     const descriptionEl = qs("#book-edit-form textarea[name=description]", body);
-    fetchSynopsisBtn.addEventListener("click", () => fetchSynopsisInto(isbn, descriptionEl, fetchSynopsisBtn));
+    fetchSynopsisBtn.addEventListener("click", () => fetchSynopsisInto(isbn, descriptionEl, fetchSynopsisBtn, book.title, (book.authors || [])[0] || ""));
   }
 
   let coverDataUri = null;
@@ -1060,13 +1060,13 @@ async function setupPreferences() {
 
 // -- manual "fetch synopsis" button (shared by the ISBN-lookup preview and the book modal) ------
 
-async function fetchSynopsisInto(isbn, textareaEl, btnEl) {
+async function fetchSynopsisInto(isbn, textareaEl, btnEl, title = "", author = "") {
   if (!isbn) return;
   btnEl.disabled = true;
   const originalText = btnEl.textContent;
   btnEl.textContent = t("js.synopsis.fetching");
   try {
-    const data = await apiSend("POST", `/api/synopsis/${encodeURIComponent(isbn)}`, {});
+    const data = await apiSend("POST", `/api/synopsis/${encodeURIComponent(isbn)}`, { title, author });
     if (data.description) {
       textareaEl.value = data.description;
       btnEl.remove();

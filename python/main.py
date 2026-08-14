@@ -231,6 +231,15 @@ class SettingsIn(BaseModel):
     ui_theme: str | None = None
 
 
+class SynopsisIn(BaseModel):
+    # Both optional -- the manual "fetch synopsis" button always has a title/author already
+    # loaded (from a saved book or an ISBN-lookup preview) and should send them so metadata.
+    # fetch_description's last-resort Wikipedia fallback has something to search for, but an
+    # older/cached frontend posting no body at all must keep working with just the ISBN.
+    title: str = ""
+    author: str = ""
+
+
 def main():
     library = create_library(db_name=_DB_NAME)
     library.notify_startup()
@@ -363,8 +372,8 @@ def main():
         except ValueError as exc:
             return {"error": str(exc)}
 
-    def fetch_synopsis(isbn: str):
-        return {"description": library.fetch_synopsis(isbn)}
+    def fetch_synopsis(isbn: str, body: SynopsisIn):
+        return {"description": library.fetch_synopsis(isbn, body.title, body.author)}
 
     ui.expose_api("GET", "/api/books", list_books)
     ui.expose_api("GET", "/api/books/favorites", list_favorite_books)

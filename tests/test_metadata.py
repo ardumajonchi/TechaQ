@@ -858,6 +858,158 @@ def test_fetch_description_empty_input_returns_empty_string():
     assert metadata.fetch_description("") == ""
 
 
+def _wikipedia_search_response(titles):
+    return FakeResponse(json_data={"query": {"search": [{"title": t} for t in titles]}})
+
+
+def _wikipedia_summary_response(extract):
+    return FakeResponse(json_data={"extract": extract})
+
+
+def test_fetch_description_rejects_implausible_openlibrary_description(monkeypatch):
+    """Open Library's crowd-sourced description field is sometimes a single stray word
+    (observed live: "Excellent" for a Celine novel) -- that must not win over a real
+    Wikipedia summary just because it's technically non-empty."""
+    isbn = "9788879720175"
+    mapping = {
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): _openlibrary_edition_response(),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"): _openlibrary_work_response(
+            description="Excellent"
+        ),
+        metadata._WIKIPEDIA_SEARCH_URL.format(lang="it"): _wikipedia_search_response(
+            ["Viaggio al termine della notte"]
+        ),
+        metadata._WIKIPEDIA_SUMMARY_URL.format(
+            lang="it", title="Viaggio_al_termine_della_notte"
+        ): _wikipedia_summary_response(
+            "Viaggio al termine della notte è il primo romanzo di Louis-Ferdinand Celine."
+        ),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
+
+    assert (
+        metadata.fetch_description(isbn, "Viaggio al termine della notte", "Louis-Ferdinand Celine")
+        == "Viaggio al termine della notte è il primo romanzo di Louis-Ferdinand Celine."
+    )
+
+
+def test_fetch_description_falls_back_to_wikipedia_when_others_miss(monkeypatch):
+    isbn = "9780441172719"
+    mapping = {
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): _openlibrary_edition_response(),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"): _openlibrary_work_response(
+            description=""
+        ),
+        metadata._WIKIPEDIA_SEARCH_URL.format(lang="it"): _wikipedia_search_response(["Dune"]),
+        metadata._WIKIPEDIA_SUMMARY_URL.format(lang="it", title="Dune"): _wikipedia_summary_response(
+            "Set on the desert planet Arrakis..."
+        ),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
+
+    assert metadata.fetch_description(isbn, "Dune", "Frank Herbert") == "Set on the desert planet Arrakis..."
+
+
+def test_fetch_description_no_title_skips_wikipedia(monkeypatch):
+    """fetch_description's default title="" must not attempt a Wikipedia search at all --
+    callers without a title (e.g. fetch_by_isbn before a title is known) should just get ""
+    rather than an assertion error from an unexpected Wikipedia request."""
+    isbn = "9780441172719"
+    mapping = {
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): _openlibrary_edition_response(),
+        metadata._OPENLIBRARY_RESOURCE_URL.format(key="/works/OL893414W"): _openlibrary_work_response(
+            description=""
+        ),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
+
+    assert metadata.fetch_description(isbn) == ""
+
+
+def test_fetch_description_wikipedia_rejects_mismatched_title(monkeypatch):
+    """Regression guard for the live-observed false positive: searching "Il treno di
+    mezzanotte" returned only the unrelated "Segretissimo" as a result -- without
+    _title_matches verifying the candidate title, this would have been trusted."""
+    isbn = "9788833579931"
+    mapping = {
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): FakeResponse(status_code=404),
+        metadata._WIKIPEDIA_SEARCH_URL.format(lang="it"): _wikipedia_search_response(["Segretissimo"]),
+        metadata._WIKIPEDIA_SEARCH_URL.format(lang="en"): _wikipedia_search_response([]),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
+
+    assert metadata.fetch_description(isbn, "Il treno di mezzanotte") == ""
+
+
+def test_fetch_description_wikipedia_falls_back_to_english(monkeypatch):
+    isbn = "9781933372358"
+    mapping = {
+        metadata._GOOGLE_BOOKS_URL: FakeResponse(status_code=200, json_data={"items": []}),
+        metadata._OPENLIBRARY_EDITION_URL.format(isbn=isbn): FakeResponse(status_code=404),
+        metadata._WIKIPEDIA_SEARCH_URL.format(lang="it"): _wikipedia_search_response([]),
+        metadata._WIKIPEDIA_SEARCH_URL.format(lang="en"): _wikipedia_search_response(["The Lost Sailors"]),
+        metadata._WIKIPEDIA_SUMMARY_URL.format(
+            lang="en", title="The_Lost_Sailors"
+        ): _wikipedia_summary_response("A novel about sailors stranded in a Caribbean port."),
+    }
+    monkeypatch.setattr(requests, "get", _dispatch(mapping))
+    monkeypatch.setattr(requests, "post", _dispatch(mapping))
+
+    assert (
+        metadata.fetch_description(isbn, "The Lost Sailors")
+        == "A novel about sailors stranded in a Caribbean port."
+    )
+
+
+@pytest.mark.parametrize(
+    "query_title, candidate_title, expected",
+    [
+        ("Marinai perduti", "Marinai perduti", True),
+        ("Il treno di mezzanotte", "Segretissimo", False),
+        ("The Lost Sailors", "The Lost Sailors (novel)", True),
+        ("Dune", "Dune Messiah", True),
+        ("", "Dune", False),
+        ("Il treno di mezzanotte", "", False),
+    ],
+)
+def test_title_matches(query_title, candidate_title, expected):
+    assert metadata._title_matches(query_title, candidate_title) is expected
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Excellent", False),
+        ("Set on the desert planet Arrakis...", True),
+        ("", False),
+        ("A", False),
+    ],
+)
+def test_is_plausible_description(text, expected):
+    assert metadata._is_plausible_description(text) is expected
+
+
+def test_fetch_wikipedia_summary_never_raises_on_network_error(monkeypatch):
+    def fake_get(url, **kwargs):
+        raise requests.exceptions.ConnectionError("no network")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    assert metadata._fetch_wikipedia_summary("Dune", "Frank Herbert") == ""
+
+
+def test_fetch_wikipedia_summary_empty_title_returns_empty_string():
+    assert metadata._fetch_wikipedia_summary("") == ""
+
+
 # ---------------------------------------------------------------------------
 # search_by_title_author
 # ---------------------------------------------------------------------------

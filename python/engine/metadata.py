@@ -56,6 +56,17 @@ _DNB_SRU_URL = "https://services.dnb.de/sru/dnb"
 _BNF_SRU_URL = "https://catalogue.bnf.fr/api/SRU"
 _OPAC_SBN_URL = "https://opac.sbn.it/o/opac-api/titles-search-post"
 _ISBNSEARCH_URL = "https://isbnsearch.org/isbn/{isbn}"
+_WIKIPEDIA_SEARCH_URL = "https://{lang}.wikipedia.org/w/api.php"
+_WIKIPEDIA_SUMMARY_URL = "https://{lang}.wikipedia.org/api/rest_v1/page/summary/{title}"
+_WIKIPEDIA_USER_AGENT = "TechaQ/1.0 (home library app; https://github.com/ardumajonchi/TechaQ)"
+
+
+def _is_plausible_description(text: str) -> bool:
+    """Open Library's crowd-sourced work.description field is sometimes a single stray word
+    (observed live: "Excellent" for a Celine novel) rather than an actual synopsis -- reject
+    anything too short to plausibly be real synopsis prose so a better source (e.g. the
+    Wikipedia fallback) gets a chance instead of this junk winning by virtue of being non-empty."""
+    return len(text.split()) >= 4
 # A plain requests.get default User-Agent gets bot-checked/blocked far more often on some sites
 # than a browser-shaped one -- shared by isbnsearch.org (below) since a 2026-08 investigation
 # found it responds identically either way, but there's no reason to find out the hard way later.
@@ -165,7 +176,7 @@ def _fetch_openlibrary(isbn: str) -> dict:
                 description = work_data.get("description")
                 if isinstance(description, dict):
                     description = description.get("value", "")
-                if isinstance(description, str) and description.strip():
+                if isinstance(description, str) and _is_plausible_description(description.strip()):
                     out["description"] = description.strip()
             except requests.RequestException as exc:
                 log.warning("Open Library work lookup failed for isbn %s: %s", isbn, exc)
@@ -523,6 +534,13 @@ def fetch_by_isbn(
     description = ""
     if include_description:
         description = merged("description") or ""
+        if not description and title:
+            # Same last-resort Wikipedia step fetch_description() falls back to -- Open
+            # Library/Google Books' description fields are empty for most non-bestseller titles
+            # (confirmed live against a real test library), so skipping this here would silently
+            # leave scan/lookup with no synopsis even though the manual "fetch synopsis" button
+            # would go on to find one.
+            description = _fetch_wikipedia_summary(title, (authors or [""])[0])
 
     page_count = ol.get("page_count")
     if page_count is None:
@@ -577,7 +595,10 @@ def _fetch_openlibrary_description(isbn: str) -> str:
         description = (work_resp.json() or {}).get("description")
         if isinstance(description, dict):
             description = description.get("value", "")
-        return description.strip() if isinstance(description, str) else ""
+        if not isinstance(description, str):
+            return ""
+        description = description.strip()
+        return description if _is_plausible_description(description) else ""
     except requests.RequestException as exc:
         log.warning("Open Library description lookup failed for isbn %s: %s", isbn, exc)
         return ""
@@ -586,21 +607,104 @@ def _fetch_openlibrary_description(isbn: str) -> str:
         return ""
 
 
-def fetch_description(isbn: str) -> str:
+_STOPWORDS = frozenset({"a", "an", "the", "of", "and", "or", "in", "on", "to", "der", "die", "das", "le", "la", "il"})
+
+
+def _significant_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[\w']+", text.lower()) if w not in _STOPWORDS and len(w) > 1}
+
+
+def _title_matches(query_title: str, candidate_title: str) -> bool:
+    """True if `candidate_title` plausibly refers to the same book as `query_title` -- every
+    significant word of the (shorter) query must appear in the candidate, so a generic/short
+    query like "Il treno di mezzanotte" can't loosely match an unrelated Wikipedia article that
+    merely shares one common word (observed live: it matched "Segretissimo", a spy-novel
+    imprint, on word overlap alone before this guard existed). Never raises."""
+    query_words = _significant_words(query_title)
+    if not query_words:
+        return False
+    candidate_words = _significant_words(candidate_title)
+    return query_words.issubset(candidate_words)
+
+
+def _fetch_wikipedia_summary(title: str, author: str = "") -> str:
+    """Search Wikipedia (Italian then English) for `title`/`author` and return the summary
+    extract of the first result whose own title plausibly matches (see `_title_matches`), or ""
+    on any failure, no-hit, or an unconvincing match. Never raises.
+
+    Last-resort synopsis source, tried only when both Google Books and Open Library (metadata.py's
+    two primary description sources) have nothing -- Wikipedia's REST summary endpoint reliably
+    has a real plot/description for well-known novels that the book-catalog sources above often
+    don't carry a description field for at all, but a blind title search risks matching an
+    unrelated article, so every result is verified against `_title_matches` before being trusted,
+    same "never fabricate/mismatch" discipline as web_lookup.py's ISBN-guess fallback."""
+    query = " ".join(part for part in (title or "", author or "") if part).strip()
+    if not query or not (title or "").strip():
+        return ""
+
+    for lang in ("it", "en"):
+        try:
+            resp = requests.get(
+                _WIKIPEDIA_SEARCH_URL.format(lang=lang),
+                params={"action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": 3},
+                headers={"User-Agent": _WIKIPEDIA_USER_AGENT},
+                timeout=_TIMEOUT,
+            )
+            resp.raise_for_status()
+            results = ((resp.json() or {}).get("query") or {}).get("search") or []
+        except requests.RequestException as exc:
+            log.warning("Wikipedia (%s) search failed for %r: %s", lang, query, exc)
+            continue
+        except (ValueError, KeyError, TypeError) as exc:
+            log.warning("Wikipedia (%s) search parse failed for %r: %s", lang, query, exc)
+            continue
+
+        match = next((r.get("title", "") for r in results if _title_matches(title, r.get("title", ""))), None)
+        if not match:
+            continue
+
+        try:
+            summary_resp = requests.get(
+                _WIKIPEDIA_SUMMARY_URL.format(lang=lang, title=requests.utils.quote(match.replace(" ", "_"))),
+                headers={"User-Agent": _WIKIPEDIA_USER_AGENT},
+                timeout=_TIMEOUT,
+            )
+            summary_resp.raise_for_status()
+            extract = (summary_resp.json() or {}).get("extract", "")
+            if isinstance(extract, str) and extract.strip():
+                return extract.strip()
+        except requests.RequestException as exc:
+            log.warning("Wikipedia (%s) summary lookup failed for %r: %s", lang, match, exc)
+        except (ValueError, KeyError, TypeError) as exc:
+            log.warning("Wikipedia (%s) summary parse failed for %r: %s", lang, match, exc)
+
+    return ""
+
+
+def fetch_description(isbn: str, title: str = "", author: str = "") -> str:
     """Fetch only the synopsis/description for an ISBN, for the manual "fetch synopsis" button
-    and the "fetch synopsis automatically" default. Tries Google Books first (usually the richer,
-    more consistently-written description when available) and falls back to Open Library's
-    work-level description if Google Books misses or is unavailable -- Google Books' keyless API
-    is rate-limited per-project on a shared daily quota, so treating it as the only source (as
-    this used to) meant synopsis fetching silently stopped working for everyone once that quota
-    was exhausted, with no fallback. Returns "" on any failure or no-hit from both. Never raises."""
+    and the "fetch synopsis automatically" default. Tries, in order: Google Books (usually the
+    richer, more consistently-written description when available), Open Library's work-level
+    description, then -- if `title` is given -- a verified Wikipedia summary match. Google Books'
+    keyless API is rate-limited per-project on a shared daily quota, and Open Library's own
+    description field is missing for most books outside well-known English-language titles (both
+    confirmed empty live for the large majority of a real test library), so without the Wikipedia
+    step synopsis fetching silently produced nothing for most books even after the Open Library
+    fallback was added. `title`/`author` are optional (default "") since fetch_by_isbn's own
+    include_description path calls this before a title is necessarily known; the manual "fetch
+    synopsis" button and lookup_isbn's flow both already have the looked-up title/author in hand
+    and should pass them through so this last resort can actually run. Returns "" on failure or
+    no-hit from every source. Never raises."""
     clean = _clean_isbn(isbn)
     if not clean:
         return ""
     description = _fetch_googlebooks(clean).get("description", "") or ""
     if description:
         return description
-    return _fetch_openlibrary_description(clean)
+    description = _fetch_openlibrary_description(clean)
+    if description:
+        return description
+    return _fetch_wikipedia_summary(title, author)
 
 
 def search_by_title_author(title: str, author: str = "") -> list[BookRecord]:

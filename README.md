@@ -155,8 +155,21 @@ the same screen.
   shared daily quota across every TechaQ install, so treating it as the only synopsis source (as
   this app originally did) meant synopsis fetching would silently stop working for everyone once
   that shared quota was exhausted for the day, with no way to tell the two "empty" cases apart.
-  `fetch_description`/the manual "Fetch synopsis" button share this same two-source logic.
-  `search_by_title_author` backs both the AI-describe and OCR-candidate-resolution flows. A
+  Open Library's own description field is rejected outright if it's implausibly short (under four
+  words — observed live returning the single word "Excellent" as a "synopsis" for a real book),
+  so a bad crowd-sourced value can't block a better source from being tried. If both Google Books
+  and Open Library still come up empty (the common case for non-bestseller/non-English titles,
+  confirmed live against a real library that's mostly Italian and out-of-print), a third fallback
+  searches Wikipedia (Italian, then English) for the book's title/author and returns the summary
+  extract of the first result — but only if that result's own title plausibly matches the query (a
+  word-subset check rejecting anything that doesn't contain every significant word of the title
+  being searched for), since a blind title search can otherwise match a wildly unrelated article
+  (observed live: searching "Il treno di mezzanotte" matched only "Segretissimo," an unrelated
+  spy-novel imprint, on loose word overlap). This Wikipedia step needs a title to search for, so
+  it only runs when the caller has one — `fetch_description`/the manual "Fetch synopsis" button
+  and the scan/lookup flow (`fetch_by_isbn`) both pass through the title/author they already have
+  once the catalog sources come up empty. `search_by_title_author` backs both the AI-describe and
+  OCR-candidate-resolution flows. A
   Google Books API key is optional.
 - **Web-search metadata fallback.** When all six catalog sources miss, `python/engine/
   web_lookup.py`'s `WebMetadataFallback` scrapes a handful of DuckDuckGo Lite search-result
