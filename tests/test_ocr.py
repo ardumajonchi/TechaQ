@@ -167,7 +167,7 @@ def test_call_ocr_service_success(monkeypatch):
         status_code = 200
 
         def json(self):
-            return {"text": "Dune Foundation"}
+            return {"text": "Dune Foundation", "confidence": 87.5}
 
     def fake_post(url, data=None, timeout=None):
         assert url == "http://ocr_runtime:6098/ocr"
@@ -176,7 +176,7 @@ def test_call_ocr_service_success(monkeypatch):
 
     monkeypatch.setattr(requests, "post", fake_post)
     result = ocr.call_ocr_service(b"imgbytes")
-    assert result == "Dune Foundation"
+    assert result == ("Dune Foundation", 87.5)
 
 
 def test_call_ocr_service_connection_error_returns_empty_string(monkeypatch):
@@ -185,7 +185,7 @@ def test_call_ocr_service_connection_error_returns_empty_string(monkeypatch):
 
     monkeypatch.setattr(requests, "post", fake_post)
     result = ocr.call_ocr_service(b"imgbytes")
-    assert result == ""
+    assert result == ("", None)
 
 
 def test_call_ocr_service_timeout_returns_empty_string(monkeypatch):
@@ -194,7 +194,7 @@ def test_call_ocr_service_timeout_returns_empty_string(monkeypatch):
 
     monkeypatch.setattr(requests, "post", fake_post)
     result = ocr.call_ocr_service(b"imgbytes")
-    assert result == ""
+    assert result == ("", None)
 
 
 def test_call_ocr_service_non_200_returns_empty_string(monkeypatch):
@@ -210,7 +210,7 @@ def test_call_ocr_service_non_200_returns_empty_string(monkeypatch):
 
     monkeypatch.setattr(requests, "post", fake_post)
     result = ocr.call_ocr_service(b"imgbytes")
-    assert result == ""
+    assert result == ("", None)
 
 
 def test_call_ocr_service_malformed_json_returns_empty_string(monkeypatch):
@@ -225,7 +225,7 @@ def test_call_ocr_service_malformed_json_returns_empty_string(monkeypatch):
 
     monkeypatch.setattr(requests, "post", fake_post)
     result = ocr.call_ocr_service(b"imgbytes")
-    assert result == ""
+    assert result == ("", None)
 
 
 # ---------------------------------------------------------------------------
@@ -233,13 +233,17 @@ def test_call_ocr_service_malformed_json_returns_empty_string(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_process_shelf_photo_picks_longest_variant_text_and_extracts(monkeypatch):
+def test_process_shelf_photo_picks_highest_confidence_variant_and_extracts(monkeypatch):
     call_count = {"n": 0}
 
     def fake_call_ocr_service(image_bytes, host=ocr.DEFAULT_OCR_HOST, port=ocr.DEFAULT_OCR_PORT):
         call_count["n"] += 1
-        # second variant "wins" with the longest text
-        return "short" if call_count["n"] != 2 else "Dune II\nFoundation"
+        # second variant has less text but far higher confidence -- it must win, not the
+        # longer-but-garbled first/third/fourth variants (this is the real bug being guarded
+        # against: a wrongly-rotated read can produce more characters than the correct one).
+        if call_count["n"] == 2:
+            return "Dune II\nFoundation", 91.0
+        return "aoeu qwjko x,mcv zpqr wjfk", 22.5
 
     monkeypatch.setattr(ocr, "call_ocr_service", fake_call_ocr_service)
 
@@ -250,8 +254,24 @@ def test_process_shelf_photo_picks_longest_variant_text_and_extracts(monkeypatch
     assert "Foundation" in titles
 
 
+def test_process_shelf_photo_falls_back_to_any_text_when_no_variant_has_confidence(monkeypatch):
+    call_count = {"n": 0}
+
+    def fake_call_ocr_service(image_bytes, host=ocr.DEFAULT_OCR_HOST, port=ocr.DEFAULT_OCR_PORT):
+        call_count["n"] += 1
+        # no words recognized (confidence None) on any variant, but one still has some text --
+        # it should still be used rather than discarding everything.
+        return ("Foundation", None) if call_count["n"] == 3 else ("", None)
+
+    monkeypatch.setattr(ocr, "call_ocr_service", fake_call_ocr_service)
+
+    result = ocr.process_shelf_photo(_sample_image_bytes(), llm=None)
+    titles = [c["title"] for c in result]
+    assert "Foundation" in titles
+
+
 def test_process_shelf_photo_unreachable_service_returns_empty_list(monkeypatch):
-    monkeypatch.setattr(ocr, "call_ocr_service", lambda *a, **k: "")
+    monkeypatch.setattr(ocr, "call_ocr_service", lambda *a, **k: ("", None))
     result = ocr.process_shelf_photo(_sample_image_bytes(), llm=None)
     assert result == []
 
@@ -304,7 +324,8 @@ def test_process_isbn_photo_merges_candidates_across_all_variants(monkeypatch):
         call_count["n"] += 1
         # the ISBN sits in a short variant's text; a *longer* variant has no digits at all --
         # the old "keep only the longest text" heuristic would have discarded the ISBN entirely.
-        return "9780134685991" if call_count["n"] == 2 else "a much longer stretch of prose text"
+        text = "9780134685991" if call_count["n"] == 2 else "a much longer stretch of prose text"
+        return text, None
 
     monkeypatch.setattr(ocr, "call_ocr_service", fake_call_ocr_service)
 
@@ -318,7 +339,7 @@ def test_process_isbn_photo_tries_four_rotations_including_180(monkeypatch):
 
     def fake_call_ocr_service(image_bytes, host=ocr.DEFAULT_OCR_HOST, port=ocr.DEFAULT_OCR_PORT):
         seen_sizes.append(len(image_bytes))
-        return ""
+        return "", None
 
     monkeypatch.setattr(ocr, "call_ocr_service", fake_call_ocr_service)
 
@@ -327,7 +348,7 @@ def test_process_isbn_photo_tries_four_rotations_including_180(monkeypatch):
 
 
 def test_process_isbn_photo_unreachable_service_returns_empty_list(monkeypatch):
-    monkeypatch.setattr(ocr, "call_ocr_service", lambda *a, **k: "")
+    monkeypatch.setattr(ocr, "call_ocr_service", lambda *a, **k: ("", None))
     result = ocr.process_isbn_photo(_sample_image_bytes())
     assert result == []
 

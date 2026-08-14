@@ -193,10 +193,16 @@ the same screen.
   `apt-get install tesseract-ocr`) exposing a small HTTP OCR service, following the same shape
   as `scummvm-q`'s custom runtime Brick — see [`bricks/ocr_runtime/README.md`](bricks/ocr_runtime/README.md)
   for its full architecture and HTTP contract. `python/engine/ocr.py` preprocesses the image with
-  Pillow, calls the service, and has the local LLM extract `{title, author}` candidates from
-  the raw OCR text — explicitly allowed to say "unknown" rather than guess. The same
-  preprocess/OCR pipeline backs photo-to-ISBN scanning, but pattern-matches digit runs instead
-  of calling the LLM, since there's no free text to interpret.
+  Pillow into 4 rotation variants (0/90/180/270°) and calls the service for each; the variant kept
+  is whichever one Tesseract reported the *highest average per-word confidence* for (from its TSV
+  output), not whichever came back with the most raw characters — a wrongly-rotated read of
+  vertical spine text can OCR to more (garbled) characters than the correctly-oriented read, which
+  was confirmed live to actually happen and produce unusable "candidates" full of gibberish. The
+  local LLM then extracts `{title, author}` candidates from that winning variant's text —
+  explicitly allowed to say "unknown" rather than guess. The same preprocess/OCR pipeline backs
+  photo-to-ISBN scanning, but merges digit-run matches across *every* variant instead of picking
+  one, and pattern-matches digit runs instead of calling the LLM, since there's no free text to
+  interpret.
 - **CSV import/export.** `python/engine/library.py`'s `import_csv` parses rows with the stdlib
   `csv` module and adds each through the same `add_book` path as every other entry point,
   skipping (and counting) rows whose ISBN already exists in the library — export is a client-side

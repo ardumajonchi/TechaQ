@@ -12,7 +12,11 @@ candidate list) rather than ever raising out of this module and taking the main 
 HTTP contract with the ocr_runtime Brick (see bricks/ocr_runtime/server.py):
   POST http://{host}:{port}/ocr
     Body: raw image bytes (NOT multipart/form-data -- the request body IS the image).
-    Response: {"text": "<raw tesseract stdout>"} on 200, {"error": "..."} on non-200.
+    Response: {"text": "...", "confidence": <0-100 or null>} on 200, {"error": "..."} on non-200.
+    `confidence` is Tesseract's own average per-word confidence, used to pick whichever rotation
+    variant of a shelf photo Tesseract actually read correctly (see process_shelf_photo) --
+    raw text length is not a reliable signal, since a garbled sideways read of vertical spine
+    text can produce *more* characters than the correctly-oriented read.
 """
 
 from __future__ import annotations
@@ -71,29 +75,29 @@ def call_ocr_service(
     image_bytes: bytes,
     host: str = DEFAULT_OCR_HOST,
     port: int = DEFAULT_OCR_PORT,
-) -> str:
-    """POST raw image bytes to the ocr_runtime Brick's /ocr endpoint and return the recognized
-    text. Returns "" (and logs) on any failure -- connection refused, timeout, non-200, malformed
-    response -- never raises.
+) -> tuple[str, float | None]:
+    """POST raw image bytes to the ocr_runtime Brick's /ocr endpoint and return
+    (recognized text, average word confidence). Returns ("", None) (and logs) on any failure --
+    connection refused, timeout, non-200, malformed response -- never raises.
     """
     url = f"http://{host}:{port}/ocr"
     try:
         resp = requests.post(url, data=image_bytes, timeout=OCR_REQUEST_TIMEOUT_S)
     except requests.exceptions.RequestException as exc:
         logger.error("call_ocr_service: request to %s failed: %r", url, exc)
-        return ""
+        return "", None
 
     if resp.status_code != 200:
         logger.error("call_ocr_service: %s returned status %d: %s", url, resp.status_code, resp.text[:200])
-        return ""
+        return "", None
 
     try:
         data = resp.json()
     except ValueError as exc:
         logger.error("call_ocr_service: %s returned non-JSON body: %r", url, exc)
-        return ""
+        return "", None
 
-    return data.get("text", "") or ""
+    return data.get("text", "") or "", data.get("confidence")
 
 
 def _strip_code_fences(text: str) -> str:
@@ -185,7 +189,13 @@ def extract_candidates(raw_text: str, llm=None) -> list[dict]:
 
 def process_shelf_photo(image_bytes: bytes, llm=None) -> list[dict]:
     """Orchestrates the full pipeline: preprocess -> OCR each rotation variant -> keep the variant
-    with the most text -> extract structured candidates.
+    Tesseract read with the highest average word confidence -> extract structured candidates.
+
+    Confidence, not raw text length, decides the winner: a wrongly-rotated variant can OCR to
+    *more* garbled characters than the correctly-oriented variant's fewer-but-legible characters
+    (gibberish still gets transcribed as *something*), so picking the longest text can pick the
+    wrong orientation outright. A variant with no recognized words at all (confidence None) is
+    only used as a last resort if every variant comes back that way.
 
     Always returns a list (possibly empty) -- never raises, even if the ocr_runtime Brick is
     unreachable or the image is malformed.
@@ -195,9 +205,14 @@ def process_shelf_photo(image_bytes: bytes, llm=None) -> list[dict]:
         return []
 
     best_text = ""
+    best_confidence = -1.0
     for variant in variants:
-        text = call_ocr_service(variant)
-        if len(text) > len(best_text):
+        text, confidence = call_ocr_service(variant)
+        if not text.strip():
+            continue
+        score = confidence if confidence is not None else -0.5
+        if score > best_confidence:
+            best_confidence = score
             best_text = text
 
     if not best_text.strip():
@@ -257,7 +272,7 @@ def process_isbn_photo(image_bytes: bytes) -> list[str]:
     seen: set[str] = set()
     candidates: list[str] = []
     for variant in variants:
-        text = call_ocr_service(variant)
+        text, _confidence = call_ocr_service(variant)
         if not text.strip():
             continue
         for digits in extract_isbn_candidates(text):

@@ -31,7 +31,7 @@ packages, never to run them.
   pulling a pre-built image from a registry, since `tesseract-ocr` needs a local `apt-get`) and
   wires up a `curl -f http://localhost:6098/healthz` healthcheck so App Lab won't route traffic to
   the container (or consider the app started) until Tesseract is actually ready to serve.
-- **`server.py`** — the whole service: a ~75-line FastAPI app with two routes, run directly via
+- **`server.py`** — the whole service: a FastAPI app with two routes, run directly via
   `uvicorn.run(...)` in `__main__` (no ASGI server config beyond binding `0.0.0.0:6098`).
 
 ## Behavior — the HTTP contract
@@ -48,12 +48,16 @@ above; it says nothing about whether `tesseract` itself works, only that the pro
   `tesseract` sniffs the actual image format itself from the file contents.
 - The body is written to `/tmp/ocr/<uuid4>.img`, then run through:
   ```
-  tesseract <tmp_path> stdout -l eng
+  tesseract <tmp_path> stdout -l eng tsv
   ```
-  with a 30-second subprocess timeout (`TESSERACT_TIMEOUT_S`).
-- **On success (exit 0):** `{"text": "<raw tesseract stdout>"}`, HTTP 200. The text is completely
-  unprocessed — no cleanup, no confidence filtering; that's left to the caller (`engine/ocr.py`
-  handles the noisy-text-to-structured-guess step on the other side).
+  with a 30-second subprocess timeout (`TESSERACT_TIMEOUT_S`). Requesting TSV output (rather than
+  plain text) gives per-word confidence scores, not just recognized text.
+- **On success (exit 0):** `{"text": "...", "confidence": <0-100 or null>}`, HTTP 200. `text` is
+  reconstructed from the TSV's word rows (one line per Tesseract source line, blank lines between
+  blocks) — equivalent to the old plain-text output. `confidence` is the average per-word
+  confidence Tesseract reported for that read, or `null` if no words were recognized at all (a
+  blank/unreadable image). Neither value is otherwise cleaned up or filtered; that's left to the
+  caller (`engine/ocr.py` handles the noisy-text-to-structured-guess step on the other side).
 - **On failure** — non-zero exit, a timeout, or any other exception (bad/corrupt image bytes, an
   empty request body, `tesseract` missing, etc.) — the response is `{"error": "..."}` with HTTP
   500 (or 400 for an empty body). The temp file is always removed in a `finally` block regardless
@@ -65,22 +69,28 @@ above; it says nothing about whether `tesseract` itself works, only that the pro
 
 `python/engine/ocr.py`'s `call_ocr_service()` is the only caller, POSTing to
 `http://ocr_runtime:6098/ocr` (the Docker Compose service name resolves within the app's internal
-network — no port-forwarding or `app.yaml` port entry is needed for this internal-only Brick).
-Two flows build on top of it:
+network — no port-forwarding or `app.yaml` port entry is needed for this internal-only Brick) and
+returning the `(text, confidence)` pair. Two flows build on top of it:
 
 - **Shelf-photo OCR** (`process_shelf_photo`) — preprocesses the photo into 4 rotation variants
-  (0/90/180/270°, grayscale + autocontrast), OCRs each one, keeps whichever variant returned the
-  *most* text (spines are usually vertical, so the "right" rotation reads the most real text), and
-  hands that text to the local LLM to extract `{title, author}` guesses.
+  (0/90/180/270°, grayscale + autocontrast), OCRs each one, and keeps whichever variant Tesseract
+  reported the *highest average word confidence* for, then hands that variant's text to the local
+  LLM to extract `{title, author}` guesses. Confidence, not raw text length, decides the winner —
+  a wrongly-rotated variant of vertical spine text can OCR to *more* characters than the correctly
+  oriented read (garbled output still gets transcribed as *something*), so picking the longest text
+  picked the wrong orientation outright on real photos; confirmed live against a real shelf photo
+  where the correct 0°/180° reads scored ~66 average confidence and the garbled 90°/270° reads
+  scored ~31-37, a clean separation raw length couldn't provide.
 - **Photo-to-ISBN scanning** (`process_isbn_photo`) — OCRs all 4 rotation variants too, but merges
   plausible ISBN-13/ISBN-10 digit sequences found across *every* variant instead of picking one
-  "best" variant — a barcode's digits can sit in a small caption that loses to a longer, digit-free
-  stretch of cover-blurb prose in the "most text" heuristic used for shelf photos.
+  "best" variant — a barcode's digits can sit in a small caption that would lose to a longer,
+  digit-free stretch of cover-blurb prose under either a length- or confidence-based
+  single-variant-picking scheme.
 
 ## Degradation
 
 If this container is missing, still starting, or the request times out/errors for any reason,
-`call_ocr_service()` returns `""` (never raises), and `process_shelf_photo`/`process_isbn_photo`
-in turn return an empty list. `engine/library.py` treats that the same as "OCR unavailable" —
-shelf-photo review and photo-to-ISBN scanning quietly disable themselves, and the rest of the app
-(manual entry, direct ISBN lookup, barcode scanning) is completely unaffected.
+`call_ocr_service()` returns `("", None)` (never raises), and `process_shelf_photo`/
+`process_isbn_photo` in turn return an empty list. `engine/library.py` treats that the same as
+"OCR unavailable" — shelf-photo review and photo-to-ISBN scanning quietly disable themselves, and
+the rest of the app (manual entry, direct ISBN lookup, barcode scanning) is completely unaffected.
